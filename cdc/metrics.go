@@ -18,6 +18,7 @@ import (
 	"github.com/pingcap/tiflow/cdc/kv"
 	"github.com/pingcap/tiflow/cdc/owner"
 	"github.com/pingcap/tiflow/cdc/processor"
+	pmetrics "github.com/pingcap/tiflow/cdc/processor/metrics"
 	tablepipeline "github.com/pingcap/tiflow/cdc/processor/pipeline"
 	"github.com/pingcap/tiflow/cdc/puller"
 	redowriter "github.com/pingcap/tiflow/cdc/redo/writer"
@@ -41,6 +42,8 @@ var registry = prometheus.NewRegistry()
 func init() {
 	registry.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
 	registry.MustRegister(prometheus.NewGoCollector())
+
+	pmetrics.InitMetrics(registry)
 
 	kv.InitMetrics(registry)
 	puller.InitMetrics(registry)

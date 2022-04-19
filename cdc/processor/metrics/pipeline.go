@@ -32,7 +32,23 @@ var (
 			Namespace: "ticdc",
 			Subsystem: "processor",
 			Name:      "unified_sorter_lag",
-			Help:      "Bucketed histogram of puller latency lag",
+			Help:      "Bucketed histogram of sorter latency lag",
+			Buckets:   prometheus.ExponentialBuckets(1, 2, 18),
+		})
+
+	LeveldbSorterResolvedTsLag = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Namespace: "ticdc",
+			Subsystem: "processor",
+			Name:      "leveldb_sorter_lag",
+			Help:      "Bucketed histogram of sorter latency lag",
 			Buckets:   prometheus.ExponentialBuckets(1, 2, 18),
 		})
 )
+
+// InitMetrics init these metrics.
+func InitMetrics(registry *prometheus.Registry) {
+	registry.MustRegister(PullerResolvedTsLag)
+	registry.MustRegister(UnifiedSorterResolvedTsLag)
+	registry.MustRegister(LeveldbSorterResolvedTsLag)
+}

@@ -20,6 +20,7 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tiflow/cdc/model"
+	"github.com/pingcap/tiflow/cdc/processor/metrics"
 	"github.com/pingcap/tiflow/cdc/sorter/encoding"
 	"github.com/pingcap/tiflow/cdc/sorter/leveldb/message"
 	"github.com/pingcap/tiflow/pkg/actor"
@@ -93,6 +94,9 @@ func (r *reader) outputResolvedTs(rts model.Ts) {
 	ok := r.output(model.NewResolvedPolymorphicEvent(0, rts))
 	if ok {
 		r.lastSentResolvedTs = rts
+		now := uint64(time.Now().UnixNano() / 1000000)
+		lag := now - (rts >> 18)
+		metrics.LeveldbSorterResolvedTsLag.Observe(float64(lag))
 	}
 }
 
