@@ -23,6 +23,7 @@ import (
 	tidbkv "github.com/pingcap/tidb/kv"
 	"github.com/pingcap/tiflow/cdc/kv"
 	"github.com/pingcap/tiflow/cdc/model"
+	"github.com/pingcap/tiflow/cdc/processor/metrics"
 	"github.com/pingcap/tiflow/cdc/puller/frontier"
 	"github.com/pingcap/tiflow/pkg/pdtime"
 	"github.com/pingcap/tiflow/pkg/regionspan"
@@ -230,6 +231,11 @@ func (p *pullerImpl) Run(ctx context.Context) error {
 					return errors.Trace(err)
 				}
 				atomic.StoreUint64(&p.resolvedTs, resolvedTs)
+				if resolvedTs > 0 {
+					now := uint64(time.Now().UnixNano() / 1000000)
+					lag := now - (resolvedTs >> 18)
+					metrics.PullerResolvedTsLag.Observe(float64(lag))
+				}
 			}
 		}
 	})

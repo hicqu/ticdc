@@ -26,6 +26,7 @@ import (
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/log"
 	"github.com/pingcap/tiflow/cdc/model"
+	"github.com/pingcap/tiflow/cdc/processor/metrics"
 	"github.com/pingcap/tiflow/cdc/sorter"
 	cerrors "github.com/pingcap/tiflow/pkg/errors"
 	"github.com/pingcap/tiflow/pkg/util"
@@ -117,6 +118,9 @@ func runMerger(ctx context.Context, numSorters int, in <-chan *flushTask, out ch
 		case out <- model.NewResolvedPolymorphicEvent(0, ts):
 			metricSorterEventCount.WithLabelValues("resolved").Inc()
 			metricSorterResolvedTsGauge.Set(float64(oracle.ExtractPhysical(ts)))
+			now := uint64(time.Now().UnixNano() / 1000000)
+			lag := now - (ts >> 18)
+			metrics.UnifiedSorterResolvedTsLag.Observe(float64(lag))
 			return nil
 		}
 	}
