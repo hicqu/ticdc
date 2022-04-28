@@ -102,6 +102,7 @@ func OpenPebble(
 	ctx context.Context, id int, path string, memInByte int, cfg *config.DBConfig,
 ) (DB, error) {
 	option, ws := buildPebbleOption(id, memInByte, cfg)
+    log.Info("pebble open", zap.String("options", option.String()))
 	dbDir := filepath.Join(path, fmt.Sprintf("%04d", id))
 	err := retry.Do(ctx, func() error {
 		err1 := os.RemoveAll(dbDir)
@@ -191,11 +192,14 @@ func (p *pebbleDB) CollectMetrics(i int) {
 			WithLabelValues(id).
 			Set(stallDuration.(time.Duration).Seconds())
 	}
-	metricLevelCount := dbLevelCount.
-		MustCurryWith(map[string]string{"id": id})
+    dbMemtableSize.WithLabelValues(id).Set(float64(stats.MemTable.Size))
+	metricLevelCount := dbLevelCount.MustCurryWith(map[string]string{"id": id})
+	metricLevelSize := dbLevelSize.MustCurryWith(map[string]string{"id": id})
 	for level, metric := range stats.Levels {
 		metricLevelCount.WithLabelValues(fmt.Sprint(level)).Set(float64(metric.NumFiles))
+		metricLevelSize.WithLabelValues(fmt.Sprint(level)).Set(float64(metric.Size))
 	}
+
 	dbBlockCacheAccess.
 		WithLabelValues(id, "hit").Set(float64(stats.BlockCache.Hits))
 	dbBlockCacheAccess.

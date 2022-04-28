@@ -53,6 +53,20 @@ var (
 		Help:      "The number of files in each level by the db",
 	}, []string{"level", "id"})
 
+    dbLevelSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "ticdc",
+		Subsystem: "db",
+		Name:      "level_size",
+		Help:      "The size of files in each level by the db",
+	}, []string{"level", "id"})
+
+    dbMemtableSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "ticdc",
+		Subsystem: "db",
+		Name:      "memtable_size",
+		Help:      "The total size of memtables in each level by the db",
+	}, []string{"id"})
+
 	dbWriteDelayDuration = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "ticdc",
 		Subsystem: "db",

@@ -33,7 +33,7 @@ import (
 )
 
 // The interval of collecting db metrics.
-const defaultMetricInterval = 15 * time.Second
+const defaultMetricInterval = 3 * time.Second
 
 // State of a system.
 type sysState int
