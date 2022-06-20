@@ -24,7 +24,6 @@ import (
 // determine if we really need to process the event.
 type RowEvent struct {
 	Row          *model.RowChangedEvent
-	Callback     func()
 	TableStopped *atomic.Bool
 }
 
@@ -33,7 +32,8 @@ type RowEvent struct {
 type RowEventSink interface {
 	// WriteRowChangedEvents writes row changed events to the sink.
 	// Note: This is an asynchronous and thread-safe method.
-	WriteRowChangedEvents(rows ...*RowEvent) error
+    // postFlush should be thread-safe.
+	WriteRowChangedEvents(rows ...*RowEvent, postFlush func(workerID uint64, ts uint64)) error
 	// Close closes the sink.
 	Close() error
 }

@@ -84,7 +84,12 @@ func (t *tableSinkImpl) UpdateResolvedTs(resolvedTs model.ResolvedTs) (err error
 	if t.txnBackend != nil {
 		event := txneventsink.TxnEvent{
 			Txn:            t.txnBuffer,
-			TableSinkState: &t.state,
+            stopped: &t.state.stopped,
+            postFlush: func(workerID int, ts uint64) {
+                // Here we suppose workerIDs are continuous. If they are not, we can use a hash map
+                // instead of slice.
+                t.state.partitionedProgress[workerID].Store(ts)
+            },
 		}
 		t.txnBackend.WriteTxnEvents(event)
 	}

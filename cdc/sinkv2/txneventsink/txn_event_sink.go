@@ -14,6 +14,8 @@
 package txneventsink
 
 import (
+	"math"
+
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/cdc/sinkv2/tablesink"
 	"go.uber.org/atomic"
@@ -24,8 +26,9 @@ import (
 // When we process row events, TableStopped is used to
 // determine if we really need to process the event.
 type TxnEvent struct {
-	Txn            *model.SingleTableTxn
-	tableSinkState *tablesink.TableSinkState
+	Txn       *model.SingleTableTxn
+	stopped   *atomic.Bool
+	postFlush func(workerID int, ts uint64)
 }
 
 // TxnEventSink is a sink that processes transaction events.
@@ -40,16 +43,31 @@ type TxnEventSink interface {
 	WorkerCount() int
 }
 
-// worker is associated with a goroutine.
-type worker struct{}
+// Worker is associated with a goroutine.
+type Worker interface{}
 
 type txnEventSinkImpl struct {
-	workers []*worker
+	input   chan<- *TxnEvent
+	workers []Worker
+}
+
+func NewTxnEventSinkImpl() TxnEventSink {
+	sink := &txnEventSinkImpl{
+		input:   make(chan<- *TxnEvent, math.MaxUint64), // Unbounded channel.
+		workers: nil,
+	}
+	go sink.conflictResolve()
+	return sink
 }
 
 func (t *txnEventSinkImpl) WriteTxnEvents(txns ...*TxnEvent) error {
 	for _, txn := range txns {
-		// Here we can use txn.causality to detect conflicts and dispatch txns
-		// to workers, just like mysqlSink.dispatchAndExecTxns.
+		t.input <- txn
+	}
+}
+
+func (t *txnEventSinkImpl) conflictResolve() {
+	for {
+		// Fetch events from t.input and resolve conflicts. Can block on conflicts.
 	}
 }
