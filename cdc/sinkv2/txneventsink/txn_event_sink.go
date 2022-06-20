@@ -15,6 +15,7 @@ package txneventsink
 
 import (
 	"github.com/pingcap/tiflow/cdc/model"
+	"github.com/pingcap/tiflow/cdc/sinkv2/tablesink"
 	"go.uber.org/atomic"
 )
 
@@ -23,9 +24,8 @@ import (
 // When we process row events, TableStopped is used to
 // determine if we really need to process the event.
 type TxnEvent struct {
-	Txn          *model.SingleTableTxn
-	Callback     func()
-	TableStopped *atomic.Bool
+	Txn            *model.SingleTableTxn
+	tableSinkState *tablesink.TableSinkState
 }
 
 // TxnEventSink is a sink that processes transaction events.
@@ -36,4 +36,20 @@ type TxnEventSink interface {
 	WriteTxnEvents(txns ...*TxnEvent) error
 	// Close closes the sink.
 	Close() error
+	// It's possible to dispatch tasks into several workers.
+	WorkerCount() int
+}
+
+// worker is associated with a goroutine.
+type worker struct{}
+
+type txnEventSinkImpl struct {
+	workers []*worker
+}
+
+func (t *txnEventSinkImpl) WriteTxnEvents(txns ...*TxnEvent) error {
+	for _, txn := range txns {
+		// Here we can use txn.causality to detect conflicts and dispatch txns
+		// to workers, just like mysqlSink.dispatchAndExecTxns.
+	}
 }

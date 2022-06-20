@@ -13,7 +13,14 @@
 
 package tablesink
 
-import "github.com/pingcap/tiflow/cdc/model"
+import (
+	"sync"
+
+	"github.com/pingcap/tiflow/cdc/model"
+	"github.com/pingcap/tiflow/cdc/sinkv2/roweventsink"
+	"github.com/pingcap/tiflow/cdc/sinkv2/txneventsink"
+	"github.com/uber-go/atomic"
+)
 
 // TableSink is the interface for table sink.
 // It is used to sink data in table units.
@@ -32,4 +39,70 @@ type TableSink interface {
 	// 1) set the table status to stopped.
 	// 2) clean up the table sink buffer.
 	Close() error
+}
+
+type TableSinkState struct {
+	// stopped is used to ensure no more events can be flushed to downstreams if table sink is stopped.
+	stopped atomic.Bool
+
+	// In backends, events can be partitioned into several workers. Every worker should be assigned
+	// an ID starts at 0. Then every worker can update its own progress.
+	partitionedProgress []atomic.Uint64
+
+	// Causality isn't thread-safe.
+	causality Causality
+}
+
+type tableSinkImpl struct {
+	txnBackend txneventsink.TxnEventSink
+	rowBackend roweventsink.RowEventSink
+	txnBuffer  *model.SingleTableTxn // Maybe []*model.SingleTableTxn
+	rowBuffer  []*model.RowChangedEvent
+	state      TableSinkState
+}
+
+func newTableSink() TableSink {
+	var txnBackend txneventsink.TxnEventSink = nil
+	txnBackend.WorkerCount
+	return &tableSinkImpl{
+		txnBackend: txnBackend,
+		state:      TableSinkState{partitionedProgress: make([]atomic.Uint64, txnBackend.WorkerCount())},
+	}
+}
+
+func (t *tableSinkImpl) AppendRowChangedEvents(rows ...*model.RowChangedEvent) (err error) {
+	if t.txnBackend != nil {
+		// Merge events into t.txnBuffer
+	}
+	if t.rowBackend != nil {
+		// Merge events into t.rowBuffer
+	}
+	return
+}
+
+func (t *tableSinkImpl) UpdateResolvedTs(resolvedTs model.ResolvedTs) (err error) {
+	if t.txnBackend != nil {
+		event := txneventsink.TxnEvent{
+			Txn:            t.txnBuffer,
+			TableSinkState: &t.state,
+		}
+		t.txnBackend.WriteTxnEvents(event)
+	}
+	return
+}
+
+func (t *tableSinkImpl) GetCheckpointTs() (rts model.ResolvedTs, err error) {
+	t.state.RLock()
+	defer t.state.RUnlock()
+	// return min(t.state.partitionedProgress), nil
+	return
+}
+
+func (t *tableSinkImpl) Close() (err error) {
+	return
+}
+
+// It's copied from cdc/sink/mysql/causality.go.
+type Causality struct {
+	relations map[string]int
 }
