@@ -53,6 +53,34 @@ type TableSinkState struct {
 	causality Causality
 }
 
+type PartitionedProgress struct {
+    partitions sync.Map
+    lock sync.Mutex // only used for create new partitions.
+}
+
+func (p *PartitionedProgress) maybeCreatePartition(id string) {
+    if _, ok := p.partitions[id]; !ok {
+        p.lock.Lock()
+        defer func () {p.lock.Unlock()}()
+    }
+    if _, ok := p.partitions[id]; ok {
+        return
+    }
+    mints := math.MaxUint64
+    for ts := range p.partitions {
+        if mints > ts {
+            mints = ts
+        }
+    }
+    // Events come from one stream and they are ordered. So when split them into N+1 ways,
+    // the new added one can be assigned the minimal ts in all partitions.
+    p.partitions[id] = mints
+}
+
+func (p *PartitionedProgress) postFlush(id string, ts uint64) {
+    p.partitions[id] = ts
+}
+
 type tableSinkImpl struct {
 	txnBackend txneventsink.TxnEventSink
 	rowBackend roweventsink.RowEventSink
