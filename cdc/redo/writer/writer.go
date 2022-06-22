@@ -375,6 +375,7 @@ func (l *LogWriter) SendDDL(ctx context.Context, ddl *model.RedoDDLEvent) error 
 
 // FlushLog implement FlushLog api
 func (l *LogWriter) FlushLog(ctx context.Context, tableID int64, ts uint64) error {
+    log.Info("[QP] FlushLog is called", zap.Int64("tableID", tableID), zap.Uint64("ts", ts))
 	select {
 	case <-ctx.Done():
 		return errors.Trace(ctx.Err())

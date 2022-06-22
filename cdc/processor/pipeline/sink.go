@@ -126,6 +126,7 @@ func (n *sinkNode) flushSink(ctx pipeline.NodeContext, resolvedTs model.Ts) (err
 			err = n.stop(ctx)
 		}
 	}()
+    log.Info("[QP] flushSink is called", zap.Int64("tableID", n.tableID), zap.Uint64("ts", resolvedTs))
 	if resolvedTs > n.barrierTs {
 		resolvedTs = n.barrierTs
 	}

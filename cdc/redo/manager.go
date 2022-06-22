@@ -248,6 +248,7 @@ func (m *ManagerImpl) FlushLog(
 		return nil
 	}
 	defer atomic.StoreInt64(&m.flushing, 0)
+    log.Info("[QP] ManagerImpl.FlushLog is called", zap.Int64("tableID", tableID), zap.Uint64("ts", resolvedTs))
 	return m.writer.FlushLog(ctx, tableID, resolvedTs)
 }
 
