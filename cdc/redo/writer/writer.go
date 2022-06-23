@@ -105,6 +105,12 @@ type LogWriter struct {
 	metaLock  sync.RWMutex
 
 	metricTotalRowsCount prometheus.Gauge
+    metricFlushMetaDuration prometheus.Observer
+    metricFlushMetaMkdirDuration prometheus.Observer
+    metricFlushMetaTruncDuration prometheus.Observer
+    metricFlushMetaWriteDuration prometheus.Observer
+    metricFlushMetaSyncDuration prometheus.Observer
+    metricFlushMetaRenameDuration prometheus.Observer
 }
 
 // NewLogWriter creates a LogWriter instance. It is guaranteed only one LogWriter per changefeed
@@ -189,6 +195,12 @@ func NewLogWriter(ctx context.Context, cfg *LogWriterConfig) (*LogWriter, error)
 	}
 
 	logWriter.metricTotalRowsCount = redoTotalRowsCountGauge.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID)
+    logWriter.metricFlushMetaDuration = redoFlushMetaDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID, "full")
+    logWriter.metricFlushMetaMkdirDuration = redoFlushMetaDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID, "mkdir")
+    logWriter.metricFlushMetaTruncDuration = redoFlushMetaDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID, "trunc")
+    logWriter.metricFlushMetaWriteDuration = redoFlushMetaDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID, "write")
+    logWriter.metricFlushMetaSyncDuration = redoFlushMetaDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID, "sync")
+    logWriter.metricFlushMetaRenameDuration = redoFlushMetaDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID, "rename")
 	logWriters[cfg.ChangeFeedID] = logWriter
 	go logWriter.runGC(ctx)
 	return logWriter, nil
@@ -592,6 +604,11 @@ func (l *LogWriter) flushLogMeta(checkPointTs, resolvedTs uint64) error {
 	l.metaLock.Lock()
 	defer l.metaLock.Unlock()
 
+    fullStart := time.Now()
+    defer func() {
+        l.metricFlushMetaDuration.Observe(time.Since(fullStart).Seconds())
+    }()
+
 	if checkPointTs != 0 {
 		l.meta.CheckPointTs = checkPointTs
 	}
@@ -603,22 +620,36 @@ func (l *LogWriter) flushLogMeta(checkPointTs, resolvedTs uint64) error {
 		return cerror.WrapError(cerror.ErrMarshalFailed, err)
 	}
 
+    start := time.Now()
 	err = os.MkdirAll(l.cfg.Dir, common.DefaultDirMode)
+    l.metricFlushMetaMkdirDuration.Observe(time.Since(start).Seconds())
+
 	if err != nil {
 		return cerror.WrapError(cerror.ErrRedoFileOp, errors.Annotate(err, "can't make dir for new redo logfile"))
 	}
 
 	tmpFileName := l.filePath() + common.MetaTmpEXT
+
+    start = time.Now()
 	tmpFile, err := openTruncFile(tmpFileName)
+    l.metricFlushMetaTruncDuration.Observe(time.Since(start).Seconds())
+
 	if err != nil {
 		return cerror.WrapError(cerror.ErrRedoFileOp, err)
 	}
 
+    start = time.Now()
 	_, err = tmpFile.Write(data)
+    l.metricFlushMetaWriteDuration.Observe(time.Since(start).Seconds())
+
 	if err != nil {
 		return cerror.WrapError(cerror.ErrRedoFileOp, err)
 	}
+
+    start = time.Now()
 	err = tmpFile.Sync()
+    l.metricFlushMetaSyncDuration.Observe(time.Since(start).Seconds())
+
 	if err != nil {
 		return cerror.WrapError(cerror.ErrRedoFileOp, err)
 	}
@@ -627,7 +658,11 @@ func (l *LogWriter) flushLogMeta(checkPointTs, resolvedTs uint64) error {
 		return cerror.WrapError(cerror.ErrRedoFileOp, err)
 	}
 
+    start = time.Now()
 	err = os.Rename(tmpFileName, l.filePath())
+    l.metricFlushMetaRenameDuration.Observe(time.Since(start).Seconds())
+
+
 	if err != nil {
 		return cerror.WrapError(cerror.ErrRedoFileOp, err)
 	}
