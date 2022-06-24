@@ -122,6 +122,7 @@ type Writer struct {
 	storage       storage.ExternalStorage
 	sync.RWMutex
 
+    metricWriteDuration prometheus.Observer
 	metricFsyncDuration    prometheus.Observer
 	metricFlushAllDuration prometheus.Observer
 	metricWriteBytes       prometheus.Gauge
@@ -159,6 +160,7 @@ func NewWriter(ctx context.Context, cfg *FileWriterConfig, opts ...Option) (*Wri
 		uint64buf: make([]byte, 8),
 		storage:   s3storage,
 
+        metricWriteDuration: redoWriteDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID),
 		metricFsyncDuration:    redoFsyncDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID),
 		metricFlushAllDuration: redoFlushAllDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID),
 		metricWriteBytes:       redoWriteBytesGauge.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID),
@@ -199,6 +201,11 @@ func (w *Writer) runFlushToDisk(ctx context.Context, flushIntervalInMs int64) {
 func (w *Writer) Write(rawData []byte) (int, error) {
 	w.Lock()
 	defer w.Unlock()
+
+    start := time.Now()
+    defer func() {
+        w.metricWriteDuration.Observe(time.Since(start).Seconds())
+    }()
 
 	writeLen := int64(len(rawData))
 	if writeLen > w.cfg.MaxLogSize {

@@ -23,6 +23,24 @@ const (
 )
 
 var (
+	redoWriteDurationHistogram = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Subsystem: subsystem,
+		Name:      "write_duration_seconds",
+		Help:      "The latency distributions of write called by redo writer",
+		Buckets:   prometheus.ExponentialBuckets(0.001, 2.0, 16),
+	}, []string{"capture", "changefeed"})
+
+	redoFlushMetaDurationHistogram = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Subsystem: subsystem,
+		Name:      "flush_meta_duration_seconds",
+		Help:      "The latency distributions of write called by redo writer",
+		Buckets:   prometheus.ExponentialBuckets(0.001, 2.0, 16),
+	}, []string{"capture", "changefeed", "action"})
+
+
+
 	redoWriteBytesGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace,
 		Subsystem: subsystem,
@@ -35,7 +53,7 @@ var (
 		Subsystem: subsystem,
 		Name:      "fsync_duration_seconds",
 		Help:      "The latency distributions of fsync called by redo writer",
-		Buckets:   prometheus.ExponentialBuckets(0.001, 2.0, 13),
+		Buckets:   prometheus.ExponentialBuckets(0.001, 2.0, 16),
 	}, []string{"capture", "changefeed"})
 
 	redoFlushAllDurationHistogram = prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -43,7 +61,7 @@ var (
 		Subsystem: subsystem,
 		Name:      "flushall_duration_seconds",
 		Help:      "The latency distributions of flushall called by redo writer",
-		Buckets:   prometheus.ExponentialBuckets(0.001, 2.0, 13),
+		Buckets:   prometheus.ExponentialBuckets(0.001, 2.0, 16),
 	}, []string{"capture", "changefeed"})
 
 	redoTotalRowsCountGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -56,6 +74,8 @@ var (
 
 // InitMetrics registers all metrics in this file
 func InitMetrics(registry *prometheus.Registry) {
+	registry.MustRegister(redoWriteDurationHistogram)
+	registry.MustRegister(redoFlushMetaDurationHistogram)
 	registry.MustRegister(redoFsyncDurationHistogram)
 	registry.MustRegister(redoTotalRowsCountGauge)
 	registry.MustRegister(redoWriteBytesGauge)
