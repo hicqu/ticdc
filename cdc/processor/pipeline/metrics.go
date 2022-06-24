@@ -56,4 +56,5 @@ func InitMetrics(registry *prometheus.Registry) {
 	registry.MustRegister(txnCounter)
 	registry.MustRegister(tableMemoryHistogram)
 	registry.MustRegister(flushSinkHistogram)
+	registry.MustRegister(sinkNodeResolvedTs)
 }
