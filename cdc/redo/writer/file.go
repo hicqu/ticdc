@@ -123,7 +123,6 @@ type Writer struct {
 	sync.RWMutex
 
     metricWriteDuration prometheus.Observer
-	metricFsyncDuration    prometheus.Observer
 	metricFlushAllDuration prometheus.Observer
 	metricWriteBytes       prometheus.Gauge
 }
@@ -161,7 +160,6 @@ func NewWriter(ctx context.Context, cfg *FileWriterConfig, opts ...Option) (*Wri
 		storage:   s3storage,
 
         metricWriteDuration: redoWriteDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID),
-		metricFsyncDuration:    redoFsyncDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID),
 		metricFlushAllDuration: redoFlushAllDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID),
 		metricWriteBytes:       redoWriteBytesGauge.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID),
 	}
@@ -279,7 +277,6 @@ func (w *Writer) Close() error {
 	}
 
 	redoFlushAllDurationHistogram.DeleteLabelValues(w.cfg.CaptureID, w.cfg.ChangeFeedID)
-	redoFsyncDurationHistogram.DeleteLabelValues(w.cfg.CaptureID, w.cfg.ChangeFeedID)
 	redoWriteBytesGauge.DeleteLabelValues(w.cfg.CaptureID, w.cfg.ChangeFeedID)
 
 	return w.close()
@@ -544,10 +541,6 @@ func (w *Writer) flush() error {
 	if err != nil {
 		return cerror.WrapError(cerror.ErrRedoFileOp, err)
 	}
-
-	start := time.Now()
-	err = w.file.Sync()
-	w.metricFsyncDuration.Observe(time.Since(start).Seconds())
 
 	return cerror.WrapError(cerror.ErrRedoFileOp, err)
 }

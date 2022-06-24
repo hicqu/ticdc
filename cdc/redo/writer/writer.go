@@ -104,12 +104,13 @@ type LogWriter struct {
 	meta      *common.LogMeta
 	metaLock  sync.RWMutex
 
+    flushMetaPending int
+
 	metricTotalRowsCount prometheus.Gauge
     metricFlushMetaDuration prometheus.Observer
     metricFlushMetaMkdirDuration prometheus.Observer
     metricFlushMetaTruncDuration prometheus.Observer
     metricFlushMetaWriteDuration prometheus.Observer
-    metricFlushMetaSyncDuration prometheus.Observer
     metricFlushMetaRenameDuration prometheus.Observer
 }
 
@@ -199,7 +200,6 @@ func NewLogWriter(ctx context.Context, cfg *LogWriterConfig) (*LogWriter, error)
     logWriter.metricFlushMetaMkdirDuration = redoFlushMetaDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID, "mkdir")
     logWriter.metricFlushMetaTruncDuration = redoFlushMetaDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID, "trunc")
     logWriter.metricFlushMetaWriteDuration = redoFlushMetaDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID, "write")
-    logWriter.metricFlushMetaSyncDuration = redoFlushMetaDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID, "sync")
     logWriter.metricFlushMetaRenameDuration = redoFlushMetaDurationHistogram.WithLabelValues(cfg.CaptureID, cfg.ChangeFeedID, "rename")
 	logWriters[cfg.ChangeFeedID] = logWriter
 	go logWriter.runGC(ctx)
@@ -615,6 +615,14 @@ func (l *LogWriter) flushLogMeta(checkPointTs, resolvedTs uint64) error {
 	if resolvedTs != 0 {
 		l.meta.ResolvedTs = resolvedTs
 	}
+
+    // FIXME: It's a trick.
+    l.flushMetaPending += 1
+    if l.flushMetaPending <= 10 {
+        return nil
+    }
+    l.flushMetaPending = 0
+
 	data, err := l.meta.MarshalMsg(nil)
 	if err != nil {
 		return cerror.WrapError(cerror.ErrMarshalFailed, err)
@@ -646,13 +654,6 @@ func (l *LogWriter) flushLogMeta(checkPointTs, resolvedTs uint64) error {
 		return cerror.WrapError(cerror.ErrRedoFileOp, err)
 	}
 
-    start = time.Now()
-	err = tmpFile.Sync()
-    l.metricFlushMetaSyncDuration.Observe(time.Since(start).Seconds())
-
-	if err != nil {
-		return cerror.WrapError(cerror.ErrRedoFileOp, err)
-	}
 	err = tmpFile.Close()
 	if err != nil {
 		return cerror.WrapError(cerror.ErrRedoFileOp, err)
@@ -661,7 +662,6 @@ func (l *LogWriter) flushLogMeta(checkPointTs, resolvedTs uint64) error {
     start = time.Now()
 	err = os.Rename(tmpFileName, l.filePath())
     l.metricFlushMetaRenameDuration.Observe(time.Since(start).Seconds())
-
 
 	if err != nil {
 		return cerror.WrapError(cerror.ErrRedoFileOp, err)
