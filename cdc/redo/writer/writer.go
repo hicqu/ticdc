@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -616,11 +617,15 @@ func (l *LogWriter) flushLogMeta(checkPointTs, resolvedTs uint64) error {
 	if resolvedTs != 0 {
 		l.meta.ResolvedTs = resolvedTs
 	}
+
+	atomic.StoreUint64(&common.LogWriterResolved, l.meta.ResolvedTs)
+	atomic.StoreUint64(&common.LogWriterCheckpoint, l.meta.CheckPointTs)
 	log.Info(
 		"[QP] LogWriter.flushLogMeta is called",
 		zap.Uint64("checkpointTs", l.meta.CheckPointTs),
 		zap.Uint64("resolvedTs", l.meta.ResolvedTs),
 	)
+
 	data, err := l.meta.MarshalMsg(nil)
 	if err != nil {
 		return cerror.WrapError(cerror.ErrMarshalFailed, err)

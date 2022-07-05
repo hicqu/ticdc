@@ -35,6 +35,11 @@ const (
 	RedoLogFileFormatV2 = "%s_%s_%s_%s_%d_%s%s"
 )
 
+var (
+	LogWriterCheckpoint uint64
+	LogWriterResolved   uint64
+)
+
 // InitS3storage init a storage used for s3,
 // s3URI should be like s3URI="s3://logbucket/test-changefeed?endpoint=http://$S3_ENDPOINT/"
 var InitS3storage = func(ctx context.Context, uri url.URL) (storage.ExternalStorage, error) {

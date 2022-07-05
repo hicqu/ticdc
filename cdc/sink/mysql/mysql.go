@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	sync_atomic "sync/atomic"
 	"time"
 
 	dmysql "github.com/go-sql-driver/mysql"
@@ -31,6 +32,7 @@ import (
 	timodel "github.com/pingcap/tidb/parser/model"
 	"github.com/pingcap/tidb/parser/mysql"
 	"github.com/pingcap/tiflow/cdc/model"
+	"github.com/pingcap/tiflow/cdc/redo/common"
 	"github.com/pingcap/tiflow/cdc/sink/metrics"
 	dmutils "github.com/pingcap/tiflow/dm/pkg/utils"
 	"github.com/pingcap/tiflow/pkg/config"
@@ -231,6 +233,9 @@ func (s *mysqlSink) EmitRowChangedEvents(ctx context.Context, rows ...*model.Row
 func (s *mysqlSink) FlushRowChangedEvents(
 	ctx context.Context, tableID model.TableID, resolved model.ResolvedTs,
 ) (uint64, error) {
+	if sync_atomic.LoadUint64(&common.LogWriterResolved) < resolved.Ts {
+		log.Fatal("[QP] mysqlSink.FlushRowChangedEvents is called with ts less than LogWriterResolved")
+	}
 	if err := s.error.Load(); err != nil {
 		return 0, err
 	}
