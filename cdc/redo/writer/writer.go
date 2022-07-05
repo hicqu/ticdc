@@ -616,6 +616,11 @@ func (l *LogWriter) flushLogMeta(checkPointTs, resolvedTs uint64) error {
 	if resolvedTs != 0 {
 		l.meta.ResolvedTs = resolvedTs
 	}
+	log.Info(
+		"[QP] LogWriter.flushLogMeta is called",
+		zap.Uint64("checkpointTs", l.meta.CheckPointTs),
+		zap.Uint64("resolvedTs", l.meta.ResolvedTs),
+	)
 	data, err := l.meta.MarshalMsg(nil)
 	if err != nil {
 		return cerror.WrapError(cerror.ErrMarshalFailed, err)
