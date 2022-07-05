@@ -153,6 +153,10 @@ func (n *sinkNode) flushSink(ctx context.Context, resolved model.ResolvedTs) (er
 		return nil
 	}
 	checkpointTs, err := n.sink.FlushRowChangedEvents(ctx, n.tableID, resolved)
+	log.Info(
+		"[QP] sinkNode.flushSink is called",
+		zap.Uint64("resolved", resolved.Ts),
+	)
 	if err != nil {
 		return errors.Trace(err)
 	}
