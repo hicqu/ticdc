@@ -16,18 +16,22 @@ package reader
 import (
 	"container/heap"
 	"context"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/pingcap/errors"
+	"github.com/pingcap/log"
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/cdc/redo/common"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
 	"go.uber.org/multierr"
+	"go.uber.org/zap"
 )
 
 //go:generate mockery --name=RedoLogReader --inpackage
@@ -239,6 +243,12 @@ func (l *LogReader) ReadNextLog(ctx context.Context, maxNumberOfEvents uint64) (
 			// by design only data (startTs,endTs] is needed, so filter out data may beyond the boundary
 			item.data.RedoRow.Row.CommitTs > l.cfg.startTs &&
 			item.data.RedoRow.Row.CommitTs <= l.cfg.endTs {
+			log.Info("[QP] redo entry is got",
+				zap.Uint64("commitTs", item.data.RedoRow.Row.CommitTs),
+				zap.Uint64("startTs", item.data.RedoRow.Row.StartTs),
+				zap.String("table", item.data.RedoRow.Row.Table.Table),
+				zap.Int64("rowID", item.data.RedoRow.Row.RowID),
+			)
 			ret = append(ret, item.data.RedoRow)
 			i++
 		}
@@ -362,6 +372,16 @@ func (l *LogReader) ReadMeta(ctx context.Context) (checkpointTs, resolvedTs uint
 				return 0, 0, cerror.WrapError(cerror.ErrRedoFileOp, err)
 			}
 
+			resolvedTsList := make([]string, 0, len(l.meta.ResolvedTsList))
+			for tid, ts := range l.meta.ResolvedTsList {
+				resolvedTsList = append(resolvedTsList, fmt.Sprintf("(%d:%d)", tid, ts))
+			}
+			log.Info("[QP] redo meta is read",
+				zap.Uint64("checkpointTs", l.meta.CheckPointTs),
+				zap.Uint64("resolvedTs", l.meta.ResolvedTs),
+				zap.String("tableResolvedTs", strings.Join(resolvedTsList, ", ")),
+			)
+
 			if !haveMeta {
 				haveMeta = true
 			}
@@ -377,6 +397,7 @@ func (l *LogReader) ReadMeta(ctx context.Context) (checkpointTs, resolvedTs uint
 	}
 
 	l.meta = metaList[maxCheckPointTs]
+	log.Info("[QP] redo meta choose", zap.Uint64("checkpointTs", maxCheckPointTs))
 	return l.meta.CheckPointTs, l.meta.ResolvedTs, nil
 }
 

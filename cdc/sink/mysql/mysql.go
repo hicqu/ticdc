@@ -654,7 +654,7 @@ func (s *mysqlSink) execDMLWithMaxRetries(ctx context.Context, dmls *preparedDML
 
 			for i, query := range dmls.sqls {
 				args := dmls.values[i]
-				log.Debug("exec row", zap.String("sql", query), zap.Any("args", args))
+				log.Info("[QP] exec row", zap.String("sql", query), zap.Any("args", args))
 				if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 					if rbErr := tx.Rollback(); rbErr != nil {
 						log.Warn("failed to rollback txn", zap.Error(err))
@@ -664,7 +664,7 @@ func (s *mysqlSink) execDMLWithMaxRetries(ctx context.Context, dmls *preparedDML
 			}
 
 			if len(dmls.markSQL) != 0 {
-				log.Debug("exec row", zap.String("sql", dmls.markSQL))
+				log.Info("[QP] exec row", zap.String("sql", dmls.markSQL))
 				if _, err := tx.ExecContext(ctx, dmls.markSQL); err != nil {
 					if rbErr := tx.Rollback(); rbErr != nil {
 						log.Warn("failed to rollback txn", zap.Error(err))

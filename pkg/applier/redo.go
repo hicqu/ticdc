@@ -178,6 +178,7 @@ func (ra *RedoApplier) consumeLogs(ctx context.Context) error {
 
 	for tableID := range tableResolvedTsMap {
 		_, err = s.FlushRowChangedEvents(ctx, tableID, model.NewResolvedTs(resolvedTs))
+		log.Info("[QP] sink.FlushRowChangedEvents", zap.Int64("tableID", tableID), zap.Uint64("resolvedTs", resolvedTs))
 		if err != nil {
 			return err
 		}
