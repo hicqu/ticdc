@@ -628,7 +628,7 @@ func (s *eventFeedSession) scheduleRegionRequest(ctx context.Context, sri single
 				zap.Uint64("regionID", sri.verID.GetID()),
 				zap.Stringer("span", sri.span),
 				zap.Reflect("retrySpans", res.RetryRanges),
-				zap.Any("sri", sri))
+				zap.Uint64("sri.ts", sri.ts))
 			for _, r := range res.RetryRanges {
 				// This call is always blocking, otherwise if scheduling in a new
 				// goroutine, it won't block the caller of `schedulerRegionRequest`.
@@ -805,6 +805,11 @@ func (s *eventFeedSession) requestRegionToStore(
 			zap.String("changefeed", s.client.changefeed.ID),
 			zap.Reflect("request", req), zap.String("addr", rpcCtx.Addr))
 
+        log.Info(
+            "stream.client.Send", 
+            zap.Bool("streamNil", stream == nil), 
+            zap.Bool("clientNil", stream.client == nil),
+            zap.Bool("reqNil", req == nil))
 		err = stream.client.Send(req)
 
 		// If Send error, the receiver should have received error too or will receive error soon. So we doesn't need
@@ -846,6 +851,13 @@ func (s *eventFeedSession) requestRegionToStore(
 			errInfo := newRegionErrorInfo(sri, &sendRequestToStoreErr{})
 			s.onRegionFail(ctx, errInfo, false /* revokeToken */)
 		} else {
+			log.Info("send request to stream success",
+				zap.String("namespace", s.client.changefeed.Namespace),
+				zap.String("changefeed", s.client.changefeed.ID),
+				zap.String("addr", rpcCtx.Addr),
+				zap.Uint64("storeID", getStoreID(rpcCtx)),
+				zap.Uint64("regionID", sri.verID.GetID()),
+				zap.Uint64("requestID", requestID))
 			s.regionRouter.Acquire(rpcCtx.Addr)
 		}
 	}
@@ -910,7 +922,7 @@ func (s *eventFeedSession) dispatchRequest(
 				zap.String("changefeed", s.client.changefeed.ID),
 				zap.Uint64("regionID", sri.verID.GetID()),
 				zap.Stringer("span", sri.span),
-				zap.Any("sri", sri))
+				zap.Uint64("sri.ts", sri.ts))
 			errInfo := newRegionErrorInfo(sri, &rpcCtxUnavailableErr{verID: sri.verID})
 			s.onRegionFail(ctx, errInfo, false /* revokeToken */)
 			continue
@@ -940,6 +952,16 @@ func (s *eventFeedSession) divideAndSendEventFeedToRegions(
 			scanT0 := time.Now()
 			bo := tikv.NewBackoffer(ctx, tikvRequestMaxBackoff)
 			regions, err = s.client.regionCache.BatchLoadRegionsWithKeyRange(bo, nextSpan.Start, nextSpan.End, limit)
+            for i, r := range regions {
+                log.Debug(
+                    "regionCache.BatchLoadRegionsWithKeyRange",
+                    zap.String("start", string(nextSpan.Start)),
+                    zap.String("end", string(nextSpan.End)),
+                    zap.Int("regionsOffset", i),
+                    zap.Uint64("regionID", r.GetMeta().Id),
+                    zap.String("regionStart", string(r.GetMeta().StartKey)),
+                    zap.String("regionEnd", string(r.GetMeta().EndKey)))
+            }
 			scanRegionsDuration.Observe(time.Since(scanT0).Seconds())
 			if err != nil {
 				return cerror.WrapError(cerror.ErrPDBatchLoadRegions, err)
@@ -999,7 +1021,7 @@ func (s *eventFeedSession) divideAndSendEventFeedToRegions(
 				zap.String("changefeed", s.client.changefeed.ID),
 				zap.Stringer("span", partialSpan),
 				zap.Uint64("regionID", region.Id),
-				zap.Any("sri", sri))
+				zap.Uint64("sri.ts", sri.ts))
 
 			// return if no more regions
 			if regionspan.EndCompare(nextSpan.Start, span.End) >= 0 {
@@ -1183,6 +1205,7 @@ func (s *eventFeedSession) receiveFromStream(
 
 	for {
 		cevent, err := stream.Recv()
+        log.Debug("stream.Recv returns", zap.Any("cevent", cevent))
 
 		failpoint.Inject("kvClientRegionReentrantError", func(op failpoint.Value) {
 			if op.(string) == "error" {
@@ -1327,6 +1350,9 @@ func (s *eventFeedSession) sendRegionChangeEvents(
 			}
 			state.start()
 			worker.setRegionState(event.RegionId, state)
+            log.Debug("regionFeedState starts",
+                zap.String("region", state.sri.verID.String()),
+                zap.Uint64("latestResolvedTs", state.lastResolvedTs))
 		} else if state.isStopped() {
 			log.Warn("drop event due to region feed stopped",
 				zap.String("namespace", s.client.changefeed.Namespace),

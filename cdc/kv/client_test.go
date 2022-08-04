@@ -256,8 +256,8 @@ func newMockServiceSpecificAddr(
 	}
 	// Some tests rely on connect timeout and ping test, so we use a smaller num
 	kasp := keepalive.ServerParameters{
-		MaxConnectionIdle:     10 * time.Second, // If a client is idle for 20 seconds, send a GOAWAY
-		MaxConnectionAge:      10 * time.Second, // If any connection is alive for more than 20 seconds, send a GOAWAY
+		MaxConnectionIdle:     10000 * time.Second, // If a client is idle for 20 seconds, send a GOAWAY
+		MaxConnectionAge:      10000 * time.Second, // If any connection is alive for more than 20 seconds, send a GOAWAY
 		MaxConnectionAgeGrace: 5 * time.Second,  // Allow 5 seconds for pending RPCs to complete before forcibly closing connections
 		Time:                  3 * time.Second,  // Ping the client if it is idle for 5 seconds to ensure the connection is still active
 		Timeout:               1 * time.Second,  // Wait 1 second for the ping ack before assuming the connection is dead
@@ -3681,4 +3681,178 @@ func TestRegionErrorInfoLogRateLimitedHint(t *testing.T) {
 	time.Sleep(2 * errInfo.logRateLimitDuration)
 	require.True(t, errInfo.logRateLimitedHint())
 	require.False(t, errInfo.logRateLimitedHint())
+}
+
+func TestEpochNotMatchRetry(t *testing.T) {
+    log.SetLevel(zap.DebugLevel)
+	ctx, cancel := context.WithCancel(context.Background())
+	wg := &sync.WaitGroup{}
+
+	InitWorkerPool()
+    wg.Add(1)
+    go func() {
+        defer wg.Done()
+        RunWorkerPool(ctx) //nolint:errcheck
+    }()
+
+    regionsResolvedTsUpdated := make(chan struct{}, 1)
+    regionsMerged := make(chan struct{}, 1)
+
+	ch1 := make(chan *cdcpb.ChangeDataEvent, 10)
+	srv1 := newMockChangeDataService(t, ch1)
+    srv1.recvLoop = func(s cdcpb.ChangeData_EventFeedServer) {
+        var reqs = make([]*cdcpb.ChangeDataRequest, 0, 3)
+        for i := 0; i < 3; i++ {
+            req, err := s.Recv()
+            if err != nil {
+                log.Fatal("grpc server Recv fail", zap.Error(err))
+            }
+            log.Info("receive a ChangeDataRequest",
+                zap.Uint64("regionID", req.RegionId),
+                zap.Uint64("checkpoint", req.CheckpointTs))
+
+            reqs = append(reqs, req)
+            _ = s.Send(&cdcpb.ChangeDataEvent{
+                Events: []*cdcpb.Event{
+                    &cdcpb.Event{
+                        RegionId: req.RegionId,
+                        RequestId: req.RequestId,
+                        Event: &cdcpb.Event_Entries_ {
+                            Entries: &cdcpb.Event_Entries{
+                                Entries: []*cdcpb.Event_Row{
+                                    &cdcpb.Event_Row{Type: cdcpb.Event_INITIALIZED },
+                                },
+                            },
+                        },
+                    },
+                },
+            })
+        }
+
+        _ = s.Send(&cdcpb.ChangeDataEvent{ ResolvedTs: &cdcpb.ResolvedTs{ Regions: []uint64{reqs[0].RegionId}, Ts: 150}})
+        _ = s.Send(&cdcpb.ChangeDataEvent{ ResolvedTs: &cdcpb.ResolvedTs{ Regions: []uint64{reqs[1].RegionId}, Ts: 200}})
+
+        regionsResolvedTsUpdated <- struct{}{}
+        _ = <- regionsMerged
+
+        _ = s.Send(&cdcpb.ChangeDataEvent{
+            Events: []*cdcpb.Event{
+                &cdcpb.Event{
+                    RegionId: reqs[0].RegionId,
+                    RequestId: reqs[0].RequestId,
+                    Event: &cdcpb.Event_Error{Error: &cdcpb.Error{ EpochNotMatch: &errorpb.EpochNotMatch{}}},
+                },
+            },
+        })
+        time.Sleep(time.Duration(100)*time.Millisecond)
+        _ = s.Send(&cdcpb.ChangeDataEvent{
+            Events: []*cdcpb.Event{
+                &cdcpb.Event{
+                    RegionId: reqs[1].RegionId,
+                    RequestId: reqs[1].RequestId,
+                    Event: &cdcpb.Event_Error{Error: &cdcpb.Error{ EpochNotMatch: &errorpb.EpochNotMatch{}}},
+                },
+            },
+        })
+
+        for {
+            req, err := s.Recv()
+            if err != nil {
+                log.Fatal("grpc server Recv fail", zap.Error(err))
+            }
+            log.Info("receive a ChangeDataRequest",
+                zap.Uint64("regionID", req.RegionId),
+                zap.Uint64("checkpoint", req.CheckpointTs))
+
+            _ = s.Send(&cdcpb.ChangeDataEvent{
+                Events: []*cdcpb.Event{
+                    &cdcpb.Event{
+                        RegionId: req.RegionId,
+                        RequestId: req.RequestId,
+                        Event: &cdcpb.Event_Entries_ {
+                            Entries: &cdcpb.Event_Entries{
+                                Entries: []*cdcpb.Event_Row{
+                                    &cdcpb.Event_Row{Type: cdcpb.Event_INITIALIZED },
+                                },
+                            },
+                        },
+                    },
+                },
+            })
+
+            _ = s.Send(&cdcpb.ChangeDataEvent{ ResolvedTs: &cdcpb.ResolvedTs{ Regions: []uint64{req.RegionId}, Ts: req.CheckpointTs}})
+        }
+    }
+	server1, addr1 := newMockService(ctx, t, srv1, wg)
+    log.Info("newMockService", zap.String("addr", addr1))
+
+	defer func() {
+		close(ch1)
+		server1.Stop()
+		wg.Wait()
+	}()
+
+	rpcClient, cluster, pdClient, err := testutils.NewMockTiKV("", mockcopr.NewCoprRPCHandler())
+	require.Nil(t, err)
+	pdClient = &mockPDClient{Client: pdClient, versionGen: defaultVersionGen}
+	kvStorage, err := tikv.NewTestTiKVStore(rpcClient, pdClient, nil, nil, 0)
+	require.Nil(t, err)
+	defer kvStorage.Close() //nolint:errcheck
+
+	cluster.AddStore(1, addr1)
+
+    region2 := uint64(2)
+    region3 := uint64(3)
+    region4 := uint64(4)
+	cluster.Bootstrap(region2, []uint64{1}, []uint64{1001}, 1001)
+	cluster.SplitRaw(region2, region3, []byte("m"), []uint64{1002}, 1002)
+	cluster.SplitRaw(region3, region4, []byte("x"), []uint64{1003}, 1003)
+
+	grpcPool := NewGrpcPoolImpl(ctx, &security.Credential{})
+	defer grpcPool.Close()
+
+	regionCache := tikv.NewRegionCache(pdClient)
+	defer regionCache.Close()
+
+	cdcClient := NewCDCClient(
+		ctx, pdClient, grpcPool, regionCache, pdutil.NewClock4Test(),
+		model.DefaultChangeFeedID("xx"),
+		config.GetDefaultServerConfig().KVClient)
+
+	lockResolver := txnutil.NewLockerResolver(kvStorage,
+		model.DefaultChangeFeedID("xx"),
+		util.RoleTester)
+
+	isPullInit := &mockPullerInit{}
+
+	eventCh := make(chan model.RegionFeedEvent, 50)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err := cdcClient.EventFeed(ctx,
+			regionspan.ComparableSpan{Start: []byte("a"), End: []byte("z")},
+			100, lockResolver, isPullInit, eventCh)
+		require.Equal(t, context.Canceled, errors.Cause(err))
+	}()
+
+    time.Sleep(time.Duration(1000)*time.Millisecond)
+
+    _ = <- regionsResolvedTsUpdated 
+    cluster.Merge(2, 3) // Merge region 3 into 2.
+    regionsMerged <- struct{}{}
+
+    for {
+        e := <- eventCh
+        if e.Resolved != nil {
+            log.Info(
+                "got from eventCh",
+                zap.Uint64("regionID", e.RegionID),
+                zap.String("start", string(e.Resolved.Span.Start)),
+                zap.String("end", string(e.Resolved.Span.End)),
+                zap.Uint64("ts", e.Resolved.ResolvedTs))
+        }
+    }
+
+    time.Sleep(time.Duration(1000)*time.Second)
+    cancel()
 }

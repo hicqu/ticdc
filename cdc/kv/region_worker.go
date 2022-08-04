@@ -239,6 +239,7 @@ func (w *regionWorker) checkShouldExit() error {
 	// If there is not region maintained by this region worker, exit it and
 	// cancel the gRPC stream.
 	if empty {
+        log.Debug("reginWorker cancels stream", zap.String("storeAddr", w.storeAddr))
 		w.cancelStream(time.Duration(0))
 		return cerror.ErrRegionWorkerExit.GenWithStackByArgs()
 	}
@@ -258,7 +259,7 @@ func (w *regionWorker) handleSingleRegionError(err error, state *regionFeedState
 		zap.Stringer("span", state.sri.span),
 		zap.Uint64("checkpoint", state.sri.ts),
 		zap.String("error", err.Error()),
-		zap.Any("sri", state.sri))
+		zap.Uint64("sri.ts", state.sri.ts))
 	// if state is already marked stopped, it must have been or would be processed by `onRegionFail`
 	if state.isStopped() {
 		return w.checkShouldExit()
@@ -765,6 +766,10 @@ func (w *regionWorker) handleResolvedTs(
 	resolvedTs uint64,
 	state *regionFeedState,
 ) error {
+    log.Debug("regionWorker.handleResolvedTs",
+        zap.Uint64("resolvedTs", resolvedTs),
+        zap.Uint64("lastResolvedTs", state.lastResolvedTs),
+        zap.Uint64("regionID", state.sri.verID.GetID()))
 	if !state.initialized {
 		return nil
 	}
