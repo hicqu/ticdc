@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package txn
+package backends
 
 import (
 	"context"
@@ -20,8 +20,10 @@ import (
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink"
 )
 
-// backend indicates a transaction backend like MySQL, TiDB, ...
-type backend interface {
+// Backend indicates a transaction backend like MySQL, TiDB, ...
+
+//go:generate mockery --name=Backend --inpackage
+type Backend interface {
 	// OnTxnEvent handles one TxnCallbackableEvent.
 	OnTxnEvent(e *eventsink.TxnCallbackableEvent) (needFlush bool)
 

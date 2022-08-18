@@ -16,14 +16,19 @@ package txn
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sort"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/golang/mock/gomock"
+	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/parser/mysql"
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink"
+	"github.com/pingcap/tiflow/cdc/sinkv2/backends"
+	mock_txn "github.com/pingcap/tiflow/cdc/sinkv2/eventsink/txn/mock"
 	"github.com/pingcap/tiflow/pkg/notify"
 	"github.com/stretchr/testify/require"
 )
@@ -57,15 +62,17 @@ func (b *blackhole) Close() error {
 	return nil
 }
 
-func TestTxnSink(t *testing.T) {
+// TestTxnSinkNolocking checks TxnSink must be nonblocking even if the associated
+// backends can be blocked in OnTxnEvent.
+func TestTxnSinkNolocking(t *testing.T) {
 	t.Parallel()
 
-	bes := make([]backend, 0, 4)
+	bes := make([]backends.Backend, 0, 4)
 	for i := 0; i < 4; i++ {
 		bes = append(bes, &blackhole{block: int32(1), n: notify.Notifier{}})
 	}
 	errCh := make(chan error, 1)
-	sink := newSink(bes, errCh, defaultConflictDetectorSlots)
+	sink := NewSink(context.Background(), bes, errCh, DefaultConflictDetectorSlots)
 
 	// Test `WriteEvents` shouldn't be blocked by slow workers.
 	var handled uint32 = 0
@@ -244,4 +251,38 @@ func TestGenKeys(t *testing.T) {
 		})
 		require.Equal(t, tc.expected, keys)
 	}
+}
+
+func TestTxnSinkClose(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Create a sink with 3 mock backends. All of them will fail on `Flush`.
+	bes := make([]backends.Backend, 0, 3)
+	for i := 0; i < 3; i++ {
+		ctrl := gomock.NewController(t)
+		mockBackend := mock_txn.NewMockBackend(ctrl)
+		if i == 0 {
+			mockBackend.EXPECT().MaxFlushInterval().Return(10 * time.Millisecond)
+			mockBackend.EXPECT().Flush(ctx).Return(errors.New("injected flush error"))
+		} else {
+			mockBackend.EXPECT().MaxFlushInterval().Return(86400 * time.Second)
+		}
+		mockBackend.EXPECT().Close().Return(nil)
+		bes = append(bes, mockBackend)
+	}
+
+	// Wait a while so that the first worker can meet the error.
+	errCh := make(chan error, 1)
+	sink := NewSink(ctx, bes, errCh, DefaultConflictDetectorSlots)
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-errCh:
+	default:
+		log.Fatal("a flush error is expected")
+	}
+
+	// cancal or sink.Close can close all background goroutines. No goroutines should be leak.
+	cancel()
+	require.Nil(t, sink.Close())
 }

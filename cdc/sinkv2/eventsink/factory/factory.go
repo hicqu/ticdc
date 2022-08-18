@@ -15,6 +15,7 @@ package factory
 
 import (
 	"context"
+	"net/url"
 	"strings"
 
 	"github.com/pingcap/tiflow/cdc/model"
@@ -22,6 +23,9 @@ import (
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink/blackhole"
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink/mq"
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink/mq/dmlproducer"
+	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink/txn"
+	"github.com/pingcap/tiflow/cdc/sinkv2/backends/mysql"
+	"github.com/pingcap/tiflow/cdc/sinkv2/backends"
 	"github.com/pingcap/tiflow/cdc/sinkv2/tablesink"
 	"github.com/pingcap/tiflow/pkg/config"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
@@ -53,8 +57,27 @@ func New(ctx context.Context,
 
 	s := &SinkFactory{}
 	schema := strings.ToLower(sinkURI.Scheme)
-	// TODO: add more sink factory here.
 	switch schema {
+	case sink.MySQLSchema:
+	case sink.MySQLSSLSchema:
+	case sink.TiDBSchema:
+	case sink.TiDBSSLSchema:
+		sinkURI, err := url.Parse(sinkURIStr)
+		if err != nil {
+			return nil, err
+		}
+		opts := mysql.SinkOptionsFromReplicaConfig(cfg)
+		backendImpls, err := mysql.NewMySQLBackends(ctx, sinkURI, opts)
+		if err != nil {
+			return nil, err
+		}
+
+		var backends []backends.Backend
+		for _, backend := range backendImpls {
+			backends = append(backends, backend)
+		}
+		s.txnSink = txn.NewSink(ctx, backends, errCh, txn.DefaultConflictDetectorSlots)
+		s.sinkType = sink.TxnSink
 	case sink.KafkaSchema, sink.KafkaSSLSchema:
 		mqs, err := mq.NewKafkaDMLSink(ctx, sinkURI, cfg, errCh,
 			kafka.NewSaramaAdminClient, dmlproducer.NewKafkaDMLProducer)

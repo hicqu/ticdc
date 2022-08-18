@@ -28,7 +28,7 @@ import (
 	"github.com/pingcap/tiflow/cdc/sink/mysql"
 	sinkv2 "github.com/pingcap/tiflow/cdc/sinkv2/ddlsink"
 	"github.com/pingcap/tiflow/cdc/sinkv2/ddlsink/factory"
-	"github.com/pingcap/tiflow/pkg/config"
+	// "github.com/pingcap/tiflow/pkg/config"
 	cdcContext "github.com/pingcap/tiflow/pkg/context"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
 	"github.com/pingcap/tiflow/pkg/util"
@@ -107,8 +107,8 @@ type ddlSinkInitHandler func(ctx cdcContext.Context, a *ddlSinkImpl, id model.Ch
 func ddlSinkInitializer(ctx cdcContext.Context, a *ddlSinkImpl, id model.ChangeFeedID, info *model.ChangeFeedInfo) error {
 	stdCtx := contextutil.PutChangefeedIDInCtx(ctx, id)
 	stdCtx = contextutil.PutRoleInCtx(stdCtx, util.RoleOwner)
-	conf := config.GetGlobalServerConfig()
-	if !conf.Debug.EnableNewSink {
+	// conf := config.GetGlobalServerConfig()
+	if true {
 		log.Info("Try to create ddlSink based on sinkV1")
 		s, err := sinkv1.New(stdCtx, id, info.SinkURI, info.Config, a.errCh)
 		if err != nil {

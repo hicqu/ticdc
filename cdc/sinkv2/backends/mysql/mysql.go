@@ -30,6 +30,7 @@ import (
 	"github.com/pingcap/log"
 	"github.com/pingcap/tidb/parser/charset"
 	"github.com/pingcap/tidb/parser/mysql"
+	"github.com/pingcap/tiflow/cdc/contextutil"
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink"
 	"github.com/pingcap/tiflow/cdc/sinkv2/metrics"
@@ -62,17 +63,17 @@ type mysqlBackend struct {
 
 	events []*eventsink.TxnCallbackableEvent
 	rows   int
-
-	cancel func()
 }
 
-// NewMySQLBackend creates a new MySQL sink using schema storage
-func NewMySQLBackend(
+// NewMySQLBackends creates several MySQL compatible backends from sinkURI.
+// The count is determined by `worker-count` parsed from sinkURI.
+func NewMySQLBackends(
 	ctx context.Context,
-	changefeedID model.ChangeFeedID,
 	sinkURI *url.URL,
 	opts SinkOptions,
-) (*mysqlBackend, error) {
+) ([]*mysqlBackend, error) {
+	changefeedID := contextutil.ChangefeedIDFromCtx(ctx)
+
 	params, err := parseSinkURIToParams(ctx, changefeedID, sinkURI)
 	if err != nil {
 		return nil, err
@@ -90,21 +91,25 @@ func NewMySQLBackend(
 	db.SetMaxIdleConns(params.workerCount)
 	db.SetMaxOpenConns(params.workerCount)
 
-	ctx, cancel := context.WithCancel(ctx)
-	sink := &mysqlBackend{
-		changefeedID: changefeedID,
-		db:           db,
-		params:       params,
-		options:      opts,
-		statistics:   metrics.NewStatistics(ctx, sink.TxnSink),
-		cancel:       cancel,
+	statistics := metrics.NewStatistics(ctx, sink.TxnSink)
+
+	backends := make([]*mysqlBackend, 0, params.workerCount)
+	for i := 0; i < params.workerCount; i++ {
+		backends = append(backends, &mysqlBackend{
+			changefeedID: changefeedID,
+			db:           db,
+			params:       params,
+			options:      opts,
+			statistics:   statistics,
+		})
 	}
 
-	log.Info("mysql backend is created",
+	log.Info("mysql backends is created",
 		zap.String("changefeedID", fmt.Sprintf("%s.%s", changefeedID.Namespace, changefeedID.ID)),
-		zap.Bool("forceReplicate", sink.options.forceReplicate),
-		zap.Bool("enableOldValue", sink.options.enableOldValue))
-	return sink, nil
+		zap.Int("workerCount", params.workerCount),
+		zap.Bool("forceReplicate", opts.forceReplicate),
+		zap.Bool("enableOldValue", opts.enableOldValue))
+	return backends, nil
 }
 
 func adjustDSN(ctx context.Context, sinkURI *url.URL, params *sinkParams, opts SinkOptions) (dsnStr string, err error) {
@@ -230,10 +235,6 @@ func (s *mysqlBackend) Close() (err error) {
 	if s.db != nil {
 		err = s.db.Close()
 		s.db = nil
-	}
-	if s.cancel != nil {
-		s.cancel()
-		s.cancel = nil
 	}
 	return
 }

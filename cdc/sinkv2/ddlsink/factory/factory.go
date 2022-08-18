@@ -38,8 +38,11 @@ func New(
 		return nil, err
 	}
 	schema := strings.ToLower(sinkURI.Scheme)
-	// TODO: add more sink factory here.
 	switch schema {
+    case sink.MySQLSchema, sink.MySQLSSLSchema, sink.TiDBSchema, sink.TiDBSSLSchema:
+        // FIXME: add here.
+		return nil,
+			cerror.ErrSinkURIInvalid.GenWithStack("the sink scheme (%s) is not supported", schema)
 	case sink.KafkaSchema, sink.KafkaSSLSchema:
 		return mq.NewKafkaDDLSink(ctx, sinkURI, cfg,
 			kafka.NewAdminClientImpl, ddlproducer.NewKafkaDDLProducer)

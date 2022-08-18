@@ -14,13 +14,17 @@
 package txn
 
 import (
+	"context"
+
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink"
+	"github.com/pingcap/tiflow/cdc/sinkv2/backends"
 	"github.com/pingcap/tiflow/pkg/causality"
 )
 
 const (
-	defaultConflictDetectorSlots int64 = 1024 * 1024
+	// DefaultConflictDetectorSlots indicates the default slot count of conflict detector.
+	DefaultConflictDetectorSlots int64 = 1024 * 1024
 )
 
 // Assert EventSink[E event.TableEvent] implementation
@@ -32,15 +36,15 @@ type sink struct {
 	workers          []*worker
 }
 
-func newSink(backends []backend, errCh chan<- error, conflictDetectorSlots int64) sink {
+func NewSink(ctx context.Context, backends []backends.Backend, errCh chan<- error, conflictDetectorSlots int64) *sink {
 	workers := make([]*worker, 0, len(backends))
 	for i, backend := range backends {
-		w := newWorker(i, backend, errCh)
+		w := newWorker(ctx, i, backend, errCh)
 		w.runBackgroundLoop()
 		workers = append(workers, w)
 	}
 	detector := causality.NewConflictDetector[*worker, *txnEvent](workers, conflictDetectorSlots)
-	return sink{conflictDetector: detector, workers: workers}
+	return &sink{conflictDetector: detector, workers: workers}
 }
 
 // WriteEvents writes events to the sink.

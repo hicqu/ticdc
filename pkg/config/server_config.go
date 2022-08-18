@@ -145,6 +145,7 @@ var defaultServerConfig = &ServerConfig{
 		Messages: defaultMessageConfig.Clone(),
 
 		EnableSchedulerV3: true,
+        EnableNewSink: true,
 		Scheduler:         NewDefaultSchedulerConfig(),
 	},
 	ClusterID: "default",

@@ -15,11 +15,13 @@ package txn
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/pingcap/log"
 	"github.com/pingcap/tiflow/cdc/sinkv2/metrics"
+	"github.com/pingcap/tiflow/cdc/sinkv2/backends"
 	"github.com/pingcap/tiflow/pkg/chann"
 	"go.uber.org/zap"
 )
@@ -30,23 +32,28 @@ type txnWithNotifier struct {
 }
 
 type worker struct {
+	ctx context.Context
+
 	ID      int
 	txnCh   *chann.Chann[txnWithNotifier]
 	stopped chan struct{}
 	wg      sync.WaitGroup
-	backend backend
+	backend backends.Backend
 	errCh   chan<- error
 
 	// Fields only used in the background loop.
 	timer *time.Timer
 }
 
-func newWorker(ID int, backend backend, errCh chan<- error) *worker {
+func newWorker(ctx context.Context, ID int, backend backends.Backend, errCh chan<- error) *worker {
 	return &worker{
+		ctx: ctx,
+
 		ID:      ID,
 		txnCh:   chann.New[txnWithNotifier](chann.Cap(-1 /*unbounded*/)),
 		stopped: make(chan struct{}),
 		backend: backend,
+		errCh:   errCh,
 	}
 }
 
@@ -74,8 +81,12 @@ func (w *worker) runBackgroundLoop() {
 		w.timer = time.NewTimer(w.backend.MaxFlushInterval())
 		for {
 			select {
+			case <-w.ctx.Done():
+				log.Info("Transaction sink backend worker exits as canceled",
+					zap.Int("workerID", w.ID))
+				return
 			case <-w.stopped:
-				log.Info("Transaction sink backend worker exits expectedly",
+				log.Info("Transaction sink backend worker exits as closed",
 					zap.Int("workerID", w.ID))
 				return
 			case txn := <-w.txnCh.Out():
@@ -97,14 +108,17 @@ func (w *worker) runBackgroundLoop() {
 
 // doFlush flushes the backend. Returns true if the goroutine can exit.
 func (w *worker) doFlush() bool {
-	// TODO: support to cancel the worker when performing some blocking operations.
-	ctx := context.Background()
-	if err := w.backend.Flush(ctx); err != nil {
-		log.Warn("txn sink worker flush fail", zap.Error(err))
+	if err := w.backend.Flush(w.ctx); err != nil {
+		fmt.Printf("flush error: %v\n", err)
+		errReported := false
 		select {
+		case <-w.ctx.Done():
+			fmt.Printf("error isn't reported\n")
 		case w.errCh <- err:
-		case <-ctx.Done():
+			fmt.Printf("error is reported\n")
+			errReported = true
 		}
+		log.Warn("txn sink worker flush fail", zap.Error(err), zap.Bool("errReported", errReported))
 		return true
 	}
 	if !w.timer.Stop() {
