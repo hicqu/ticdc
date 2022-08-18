@@ -20,8 +20,8 @@ import (
 	"time"
 
 	"github.com/pingcap/log"
-	"github.com/pingcap/tiflow/cdc/sinkv2/metrics"
 	"github.com/pingcap/tiflow/cdc/sinkv2/backends"
+	"github.com/pingcap/tiflow/cdc/sinkv2/metrics"
 	"github.com/pingcap/tiflow/pkg/chann"
 	"go.uber.org/zap"
 )
@@ -58,6 +58,7 @@ func newWorker(ctx context.Context, ID int, backend backends.Backend, errCh chan
 }
 
 func (w *worker) Add(txn *txnEvent, unlock func()) {
+    log.Info("QP txn worker add an event")
 	w.txnCh.In() <- txnWithNotifier{txn, unlock}
 }
 
@@ -77,7 +78,10 @@ func (w *worker) runBackgroundLoop() {
 				log.Info("transaction sink backend close fail",
 					zap.Error(err))
 			}
+            log.Info("[QP] txn worker exits")
 		}()
+        log.Info("[QP] txn worker starts")
+
 		w.timer = time.NewTimer(w.backend.MaxFlushInterval())
 		for {
 			select {
@@ -90,6 +94,7 @@ func (w *worker) runBackgroundLoop() {
 					zap.Int("workerID", w.ID))
 				return
 			case txn := <-w.txnCh.Out():
+                log.Info("[QP] txnsink worker gets a event")
 				metrics.ConflictDetectDuration.Observe(time.Since(txn.start).Seconds())
 				txn.wantMore()
 				if w.backend.OnTxnEvent(txn.txnEvent.TxnCallbackableEvent) && w.doFlush() {
@@ -108,7 +113,9 @@ func (w *worker) runBackgroundLoop() {
 
 // doFlush flushes the backend. Returns true if the goroutine can exit.
 func (w *worker) doFlush() bool {
+    log.Info("[QP] txnsink worker doFlush is called")
 	if err := w.backend.Flush(w.ctx); err != nil {
+        log.Info("[QP] txnsink worker backend.Flush error", zap.Error(err))
 		fmt.Printf("flush error: %v\n", err)
 		errReported := false
 		select {
@@ -122,8 +129,12 @@ func (w *worker) doFlush() bool {
 		return true
 	}
 	if !w.timer.Stop() {
-		<-w.timer.C
+        select {
+        case <-w.timer.C:
+        default:
+        }
 	}
+    log.Info("[QP] txnsink worker doFlush stop prev ok")
 	w.timer.Reset(w.backend.MaxFlushInterval())
 	return false
 }

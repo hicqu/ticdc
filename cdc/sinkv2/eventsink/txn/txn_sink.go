@@ -17,9 +17,12 @@ import (
 	"context"
 
 	"github.com/pingcap/tiflow/cdc/model"
-	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink"
 	"github.com/pingcap/tiflow/cdc/sinkv2/backends"
+	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink"
 	"github.com/pingcap/tiflow/pkg/causality"
+
+	"github.com/pingcap/log"
+	"go.uber.org/zap"
 )
 
 const (
@@ -38,6 +41,7 @@ type sink struct {
 
 func NewSink(ctx context.Context, backends []backends.Backend, errCh chan<- error, conflictDetectorSlots int64) *sink {
 	workers := make([]*worker, 0, len(backends))
+    log.Info("QP txn sink workers", zap.Int("count", len(backends)))
 	for i, backend := range backends {
 		w := newWorker(ctx, i, backend, errCh)
 		w.runBackgroundLoop()
@@ -49,8 +53,11 @@ func NewSink(ctx context.Context, backends []backends.Backend, errCh chan<- erro
 
 // WriteEvents writes events to the sink.
 func (s *sink) WriteEvents(rows ...*eventsink.TxnCallbackableEvent) (err error) {
+    log.Info("[QP] txnsink.WriteEvents is called", zap.Int("events", len(rows)))
 	for _, row := range rows {
+        log.Info("[QP] txnsink is going to Add an event into conflictDetector")
 		err = s.conflictDetector.Add(newTxnEvent(row))
+        log.Info("[QP] txnsink finishes to Add an event into conflictDetector")
 		if err != nil {
 			return
 		}

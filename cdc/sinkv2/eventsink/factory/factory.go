@@ -19,13 +19,13 @@ import (
 	"strings"
 
 	"github.com/pingcap/tiflow/cdc/model"
+	"github.com/pingcap/tiflow/cdc/sinkv2/backends"
+	"github.com/pingcap/tiflow/cdc/sinkv2/backends/mysql"
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink"
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink/blackhole"
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink/mq"
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink/mq/dmlproducer"
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink/txn"
-	"github.com/pingcap/tiflow/cdc/sinkv2/backends/mysql"
-	"github.com/pingcap/tiflow/cdc/sinkv2/backends"
 	"github.com/pingcap/tiflow/cdc/sinkv2/tablesink"
 	"github.com/pingcap/tiflow/pkg/config"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
@@ -58,10 +58,7 @@ func New(ctx context.Context,
 	s := &SinkFactory{}
 	schema := strings.ToLower(sinkURI.Scheme)
 	switch schema {
-	case sink.MySQLSchema:
-	case sink.MySQLSSLSchema:
-	case sink.TiDBSchema:
-	case sink.TiDBSSLSchema:
+	case sink.MySQLSchema, sink.MySQLSSLSchema, sink.TiDBSchema, sink.TiDBSSLSchema:
 		sinkURI, err := url.Parse(sinkURIStr)
 		if err != nil {
 			return nil, err

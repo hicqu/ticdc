@@ -39,8 +39,8 @@ func New(
 	}
 	schema := strings.ToLower(sinkURI.Scheme)
 	switch schema {
-    case sink.MySQLSchema, sink.MySQLSSLSchema, sink.TiDBSchema, sink.TiDBSSLSchema:
-        // FIXME: add here.
+	case sink.MySQLSchema, sink.MySQLSSLSchema, sink.TiDBSchema, sink.TiDBSSLSchema:
+		// FIXME: add here.
 		return nil,
 			cerror.ErrSinkURIInvalid.GenWithStack("the sink scheme (%s) is not supported", schema)
 	case sink.KafkaSchema, sink.KafkaSSLSchema:

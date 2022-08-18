@@ -19,6 +19,9 @@ import (
 	"github.com/pingcap/tiflow/engine/pkg/containers"
 	"github.com/pingcap/tiflow/pkg/causality/internal"
 	"go.uber.org/atomic"
+
+	"github.com/pingcap/log"
+	// "go.uber.org/zap"
 )
 
 // ConflictDetector implements a logic that dispatches transaction
@@ -85,7 +88,9 @@ func NewConflictDetector[Worker worker[Txn], Txn txnEvent](
 
 // Add pushes a transaction to the ConflictDetector.
 func (d *ConflictDetector[Worker, Txn]) Add(txn Txn) error {
+    log.Info("QP ConflictDetector.Add is called")
 	node := internal.NewNode()
+    log.Info("QP ConflictDetector.Add allocs a node")
 	d.slots.Add(node, txn.ConflictKeys(), func(other *internal.Node) {
 		// Construct a dependency map under the slots' lock.
 		node.DependOn(other)

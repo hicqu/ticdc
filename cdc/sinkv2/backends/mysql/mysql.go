@@ -60,7 +60,7 @@ type mysqlBackend struct {
 	params       *sinkParams
 	options      SinkOptions
 	statistics   *metrics.Statistics
-    cancel func()
+	cancel       func()
 
 	events []*eventsink.TxnCallbackableEvent
 	rows   int
@@ -92,7 +92,7 @@ func NewMySQLBackends(
 	db.SetMaxIdleConns(params.workerCount)
 	db.SetMaxOpenConns(params.workerCount)
 
-    ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(ctx)
 	statistics := metrics.NewStatistics(ctx, sink.TxnSink)
 
 	backends := make([]*mysqlBackend, 0, params.workerCount)
@@ -103,7 +103,7 @@ func NewMySQLBackends(
 			params:       params,
 			options:      opts,
 			statistics:   statistics,
-            cancel: cancel,
+			cancel:       cancel,
 		})
 	}
 
@@ -192,6 +192,7 @@ func adjustDSN(ctx context.Context, sinkURI *url.URL, params *sinkParams, opts S
 func (s *mysqlBackend) OnTxnEvent(event *eventsink.TxnCallbackableEvent) (needFlush bool) {
 	s.events = append(s.events, event)
 	s.rows += len(event.Event.Rows)
+    log.Info("[QP] mysqlBackend.OnTxnEvent", zap.Int("rows", s.rows))
 	return event.Event.ToWaitFlush() || s.rows >= s.params.maxTxnRow
 }
 
@@ -215,14 +216,18 @@ func (s *mysqlBackend) Flush(ctx context.Context) (err error) {
 	dmls := s.prepareDMLs()
 	log.Debug("prepare DMLs", zap.Any("rows", s.rows),
 		zap.Strings("sqls", dmls.sqls), zap.Any("values", dmls.values))
+	log.Info("[QP] prepare DMLs", zap.Any("rows", s.rows),
+		zap.Strings("sqls", dmls.sqls), zap.Any("values", dmls.values))
 
 	if err := s.execDMLWithMaxRetries(ctx, dmls); err != nil {
 		log.Error("execute DMLs failed", zap.String("err", err.Error()))
 		return errors.Trace(err)
 	}
+    log.Info("[QP] execute DMLs ok")
 
 	// Be friently to GC.
 	for i := 0; i < len(s.events); i++ {
+        s.events[i].Callback()
 		s.events[i] = nil
 	}
 	if cap(s.events) > 1024 {
@@ -239,7 +244,7 @@ func (s *mysqlBackend) Close() (err error) {
 		err = s.db.Close()
 		s.db = nil
 	}
-    s.cancel()
+	s.cancel()
 	return
 }
 
