@@ -60,6 +60,7 @@ type mysqlBackend struct {
 	params       *sinkParams
 	options      SinkOptions
 	statistics   *metrics.Statistics
+    cancel func()
 
 	events []*eventsink.TxnCallbackableEvent
 	rows   int
@@ -91,6 +92,7 @@ func NewMySQLBackends(
 	db.SetMaxIdleConns(params.workerCount)
 	db.SetMaxOpenConns(params.workerCount)
 
+    ctx, cancel := context.WithCancel(ctx)
 	statistics := metrics.NewStatistics(ctx, sink.TxnSink)
 
 	backends := make([]*mysqlBackend, 0, params.workerCount)
@@ -101,6 +103,7 @@ func NewMySQLBackends(
 			params:       params,
 			options:      opts,
 			statistics:   statistics,
+            cancel: cancel,
 		})
 	}
 
@@ -236,6 +239,7 @@ func (s *mysqlBackend) Close() (err error) {
 		err = s.db.Close()
 		s.db = nil
 	}
+    s.cancel()
 	return
 }
 
