@@ -15,9 +15,9 @@ package internal
 
 import (
 	"fmt"
+	"math/rand"
 	"sync"
-    "math/rand"
-    "time"
+	"time"
 
 	"github.com/google/btree"
 	"go.uber.org/atomic"
@@ -154,8 +154,8 @@ func (n *Node) AssignTo(workerID int64) {
 			if node.conflictCounts[unassigned] == 0 {
 				delete(node.conflictCounts, unassigned)
 			}
-            node.conflictCounts[workerID]++
-            node.notifyMaybeResolved()
+			node.conflictCounts[workerID]++
+			node.notifyMaybeResolved()
 
 			return true
 		})
@@ -167,10 +167,6 @@ func (n *Node) AssignTo(workerID int64) {
 func (n *Node) Remove() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-
-	if len(n.conflictCounts) != 0 {
-		panic("conflictNumber > 0")
-	}
 
 	if n.dependers != nil {
 		n.dependers.Ascend(func(node *Node) bool {
@@ -232,33 +228,34 @@ func (n *Node) notifyMaybeResolved() {
 // returns (-1, true) if there is no conflict,
 // returns (N, true) if only worker N can be used.
 func (n *Node) tryResolve() (int64, bool) {
-    if n.conflictCounts[unassigned] > 0 {
-        return 0, false
-    }
-    if len(n.conflictCounts) == 0 {
+	if len(n.conflictCounts) == 0 {
 		// No conflict at all
 		return -1, true
-    } else if len(n.conflictCounts) == 1 {
+	}
+	if n.conflictCounts[unassigned] > 0 {
+		return 0, false
+	}
+	if len(n.conflictCounts) == 1 {
 		// Use for loop to retrieve the only key.
 		for workerNum := range n.conflictCounts {
 			// Only conflicting with one worker, i.e., workerNum.
 			return workerNum, true
 		}
-    }
+	}
 
-    conflictNumber := 0
-    wids := make([]int64, 0, len(n.conflictCounts))
-    for wid, dep := range n.conflictCounts {
-        wids = append(wids, wid)
-        conflictNumber += dep
-    }
+	conflictNumber := 0
+	wids := make([]int64, 0, len(n.conflictCounts))
+	for wid, dep := range n.conflictCounts {
+		wids = append(wids, wid)
+		conflictNumber += dep
+	}
 	if conflictNumber == 0 {
-        rand.Seed(time.Now().Unix())
-        n := rand.Int() % len(wids)
-        return wids[n], true
-    } else {
-        return 0, false
-    }
+		rand.Seed(time.Now().Unix())
+		n := rand.Int() % len(wids)
+		return wids[n], true
+	} else {
+		return 0, false
+	}
 }
 
 func (n *Node) lazyCreateMap() {

@@ -28,7 +28,7 @@ type Eq[T any] interface {
 // a DAG of dependency.
 type Slots[E Eq[E]] struct {
 	mu    sync.Mutex
-	slots map[int64]*list.List
+	slots map[string]*list.List
 
 	numSlots int64
 }
@@ -36,7 +36,7 @@ type Slots[E Eq[E]] struct {
 // NewSlots creates a new Slots.
 func NewSlots[E Eq[E]](numSlots int64) *Slots[E] {
 	return &Slots[E]{
-		slots:    make(map[int64]*list.List),
+		slots:    make(map[string]*list.List),
 		numSlots: numSlots,
 	}
 }
@@ -45,13 +45,13 @@ func NewSlots[E Eq[E]](numSlots int64) *Slots[E] {
 // where elem is conflicting with an existing element.
 // Note that onConflict can be called multiple times with the same
 // dependee.
-func (s *Slots[E]) Add(elem E, keys []int64, onConflict func(dependee E)) {
+func (s *Slots[E]) Add(elem E, keys []string, onConflict func(dependee E)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for _, key := range keys {
 		needInsert := true
-		if elemList, ok := s.slots[key%s.numSlots]; ok {
+		if elemList, ok := s.slots[key]; ok {
 			if elemList.Len() > 0 {
 				lastElem := elemList.Back().Value.(E)
 				if lastElem.Equals(elem) {
@@ -61,22 +61,22 @@ func (s *Slots[E]) Add(elem E, keys []int64, onConflict func(dependee E)) {
 				}
 			}
 		} else {
-			s.slots[key%s.numSlots] = list.New()
+			s.slots[key] = list.New()
 		}
 
 		if needInsert {
-			s.slots[key%s.numSlots].PushBack(elem)
+			s.slots[key].PushBack(elem)
 		}
 	}
 }
 
 // Remove removes an element from the Slots.
-func (s *Slots[E]) Remove(elem E, keys []int64) {
+func (s *Slots[E]) Remove(elem E, keys []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for _, key := range keys {
-		elemList, ok := s.slots[key%s.numSlots]
+		elemList, ok := s.slots[key]
 		if !ok {
 			panic("elem list is not found")
 		}

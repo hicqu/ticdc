@@ -18,7 +18,7 @@ type (
 )
 
 type txnEvent interface {
-	ConflictKeys() []conflictKey
+	ConflictKeys() []string
 }
 
 type worker[Txn txnEvent] interface {
