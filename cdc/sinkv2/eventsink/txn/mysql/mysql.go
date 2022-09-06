@@ -35,6 +35,7 @@ import (
 	"github.com/pingcap/tiflow/pkg/quotes"
 	"github.com/pingcap/tiflow/pkg/retry"
 	pmysql "github.com/pingcap/tiflow/pkg/sink/mysql"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 )
 
@@ -54,7 +55,8 @@ type mysqlBackend struct {
 	events []*eventsink.TxnCallbackableEvent
 	rows   int
 
-	statistics *metrics.Statistics
+	statistics                          *metrics.Statistics
+	metricTxnSinkDMLBatchCommitDuration prometheus.Observer
 }
 
 // NewMySQLBackends creates a new MySQL sink using schema storage
@@ -89,11 +91,12 @@ func NewMySQLBackends(
 	backends := make([]*mysqlBackend, 0, cfg.WorkerCount)
 	for i := 0; i < cfg.WorkerCount; i++ {
 		backends = append(backends, &mysqlBackend{
-			changefeed:  changefeed,
-			db:          db,
-			cfg:         cfg,
-			dmlMaxRetry: defaultDMLMaxRetry,
-			statistics:  statistics,
+			changefeed:                          changefeed,
+			db:                                  db,
+			cfg:                                 cfg,
+			dmlMaxRetry:                         defaultDMLMaxRetry,
+			statistics:                          statistics,
+			metricTxnSinkDMLBatchCommitDuration: metrics.TxnSinkDMLBatchCommitDuration.WithLabelValues(changefeedID.Namespace, changefeedID.ID),
 		})
 	}
 
@@ -133,12 +136,14 @@ func (s *mysqlBackend) Flush(ctx context.Context) (err error) {
 	log.Debug("prepare DMLs", zap.Any("rows", s.rows),
 		zap.Strings("sqls", dmls.sqls), zap.Any("values", dmls.values))
 
+	start := time.Now()
 	if err := s.execDMLWithMaxRetries(ctx, dmls); err != nil {
 		if errors.Cause(err) != context.Canceled {
 			log.Error("execute DMLs failed", zap.Error(err))
 		}
 		return errors.Trace(err)
 	}
+	s.metricTxnSinkDMLBatchCommitDuration.Observe(float64(time.Since(start).Seconds()))
 
 	// Be friently to GC.
 	for i := 0; i < len(s.events); i++ {

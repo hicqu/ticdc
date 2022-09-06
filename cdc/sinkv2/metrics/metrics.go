@@ -49,6 +49,23 @@ var (
 			Name:      "txn_worker_busy_ratio",
 			Help:      "Busy ratio (X ms in 1s) for all workers.",
 		}, []string{"namespace", "changefeed"})
+
+	TxnWorkerHandledRows = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "ticdc",
+			Subsystem: "sinkv2",
+			Name:      "txn_worker_handled_rows",
+			Help:      "Busy ratio (X ms in 1s) for all workers.",
+		}, []string{"namespace", "changefeed", "id"})
+
+	TxnSinkDMLBatchCommitDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "ticdc",
+			Subsystem: "sinkv2",
+			Name:      "txn_sink_dml_batch_commit",
+			Help:      "XXX",
+			Buckets:   prometheus.ExponentialBuckets(0.01, 2, 18), // 10ms~1000s
+		}, []string{"namespace", "changefeed"})
 )
 
 // ---------- Metrics used in Statistics. ---------- //
@@ -98,6 +115,8 @@ func InitMetrics(registry *prometheus.Registry) {
 	registry.MustRegister(ConflictDetectDuration)
 	registry.MustRegister(TxnWorkerFlushDuration)
 	registry.MustRegister(TxnWorkerBusyRatio)
+	registry.MustRegister(TxnWorkerHandledRows)
+	registry.MustRegister(TxnSinkDMLBatchCommitDuration)
 
 	registry.MustRegister(ExecBatchHistogram)
 	registry.MustRegister(ExecDDLHistogram)

@@ -49,8 +49,14 @@ func (e *txnEvent) ConflictKeys() []int64 {
 		if _, err := hasher.Write(key); err != nil {
 			log.Panic("crc64 hasher fail")
 		}
-		e.conflictKeys = append(e.conflictKeys, int64(hasher.Sum64()))
+		e.conflictKeys = append(e.conflictKeys, int64(hasher.Sum64()/2))
 	}
+
+	slots := make([]int64, 0, len(keys))
+	for i := 0; i < len(keys); i++ {
+		slots = append(slots, e.conflictKeys[i]%(1024*1024))
+	}
+	log.Info("conflict keys", zap.Any("slots", slots))
 	return e.conflictKeys
 }
 
