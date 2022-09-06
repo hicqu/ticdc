@@ -15,9 +15,8 @@ package internal
 
 import (
 	"fmt"
-	"math/rand"
+	"sort"
 	"sync"
-	"time"
 
 	"github.com/google/btree"
 	"go.uber.org/atomic"
@@ -250,9 +249,8 @@ func (n *Node) tryResolve() (int64, bool) {
 		conflictNumber += dep
 	}
 	if conflictNumber == 0 {
-		rand.Seed(time.Now().Unix())
-		n := rand.Int() % len(wids)
-		return wids[n], true
+		sort.Slice(wids, func(i, j int) bool { return wids[i] < wids[j] })
+		return wids[len(wids)-1], true
 	} else {
 		return 0, false
 	}

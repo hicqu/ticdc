@@ -161,7 +161,11 @@ func (d *ConflictDetector[Worker, Txn]) sendToWorker(
 	txn Txn, node *internal.Node, unlock func(), workerID int64,
 ) {
 	if workerID == -1 {
-		workerID = d.nextWorkerID.Add(1) % int64(len(d.workers))
+		candidates := len(d.workers)
+		if candidates > 3 {
+			candidates -= 1
+		}
+		workerID = d.nextWorkerID.Add(1) % int64(candidates)
 	}
 
 	node.AssignTo(workerID)
