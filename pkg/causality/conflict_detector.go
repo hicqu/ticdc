@@ -14,6 +14,9 @@
 package causality
 
 import (
+	"sync"
+
+	"github.com/pingcap/tiflow/engine/pkg/containers"
 	"github.com/pingcap/tiflow/pkg/causality/internal"
 	"go.uber.org/atomic"
 )
@@ -27,12 +30,20 @@ type ConflictDetector[Worker worker[Txn], Txn txnEvent] struct {
 
 	// slots are used to find all unfinished transactions
 	// conflicting with an incoming transactions.
-	slots *internal.Slots[*internal.Node]
+	slots    *internal.Slots[*internal.Node]
+	numSlots int64
+
+	// finishedTxnQueue is the queue for all transactions that
+	// are already finished, but still waiting to be processed
+	// by the conflict detector, because they need to be processed
+	// so that transactions conflicting with them can be unblocked.
+	finishedTxnQueue *containers.SliceQueue[txnFinishedEvent[Txn]]
 
 	// nextWorkerID is used to dispatch transactions round-robin.
 	nextWorkerID atomic.Int64
 
-	numSlots int64
+	wg      sync.WaitGroup
+	closeCh chan struct{}
 }
 
 type txnFinishedEvent[Txn txnEvent] struct {
@@ -51,11 +62,21 @@ func NewConflictDetector[Worker worker[Txn], Txn txnEvent](
 	workers []Worker,
 	numSlots int64,
 ) *ConflictDetector[Worker, Txn] {
-	return &ConflictDetector[Worker, Txn]{
-		workers:  workers,
-		slots:    internal.NewSlots[*internal.Node](numSlots),
-		numSlots: numSlots,
+	ret := &ConflictDetector[Worker, Txn]{
+		workers:          workers,
+		slots:            internal.NewSlots[*internal.Node](numSlots),
+		numSlots:         numSlots,
+		finishedTxnQueue: containers.NewSliceQueue[txnFinishedEvent[Txn]](),
+		closeCh:          make(chan struct{}),
 	}
+
+	ret.wg.Add(1)
+	go func() {
+		defer ret.wg.Done()
+		ret.runBackgroundTasks()
+	}()
+
+	return ret
 }
 
 // Add pushes a transaction to the ConflictDetector.
@@ -68,9 +89,7 @@ func (d *ConflictDetector[Worker, Txn]) Add(txn Txn) error {
 	node.OnNoConflict(func(workerID int64) {
 		node.AssignTo(workerID)
 		unlock := func() {
-			d.slots.Remove(node, txn.ConflictKeys(d.numSlots))
-			node.Remove()
-			node.Free()
+			d.finishedTxnQueue.Push(txnFinishedEvent[Txn]{txn: txn, node: node})
 		}
 		d.sendToWorker(txn, unlock, workerID)
 	})
@@ -80,6 +99,27 @@ func (d *ConflictDetector[Worker, Txn]) Add(txn Txn) error {
 
 // Close closes the ConflictDetector.
 func (d *ConflictDetector[Worker, Txn]) Close() {
+	close(d.closeCh)
+	d.wg.Wait()
+}
+
+func (d *ConflictDetector[Worker, Txn]) runBackgroundTasks() {
+	for {
+		select {
+		case <-d.closeCh:
+			return
+		case <-d.finishedTxnQueue.C:
+			for {
+				event, ok := d.finishedTxnQueue.Pop()
+				if !ok {
+					break
+				}
+				d.slots.Remove(event.node, event.txn.ConflictKeys(d.numSlots))
+				event.node.Remove()
+				event.node.Free()
+			}
+		}
+	}
 }
 
 // sendToWorker should not call txn.Callback if it returns an error.

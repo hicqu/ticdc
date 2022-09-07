@@ -53,8 +53,7 @@ type worker struct {
 	metricTxnWorkerHandledRows   prometheus.Counter
 
 	// Fields only used in the background loop.
-	flushInterval     time.Duration
-	timer             *time.Timer
+	hasPending        bool
 	wantMoreCallbacks []func()
 }
 
@@ -77,7 +76,7 @@ func newWorker(ctx context.Context, ID int, backend backend, errCh chan<- error,
 		metricTxnWorkerBusyRatio:     metrics.TxnWorkerBusyRatio.WithLabelValues(changefeedID.Namespace, changefeedID.ID),
 		metricTxnWorkerHandledRows:   metrics.TxnWorkerHandledRows.WithLabelValues(changefeedID.Namespace, changefeedID.ID, wid),
 
-		flushInterval:     backend.MaxFlushInterval(),
+		hasPending:        false,
 		wantMoreCallbacks: make([]func(), 0, 1024),
 	}
 }
@@ -120,38 +119,47 @@ func (w *worker) runBackgroundLoop() {
 			zap.String("changefeedID", w.changefeed),
 			zap.Int("workerID", w.ID))
 
-		w.timer = time.NewTimer(w.flushInterval)
 		var flushTimeSlice, totalTimeSlice time.Duration
 		overseerTimer := time.NewTicker(time.Second)
 		startToWork := time.Now()
 		defer overseerTimer.Stop()
 	LOOP:
 		for {
-			select {
-			case <-w.ctx.Done():
-				log.Info("Transaction sink worker exits as canceled",
-					zap.String("changefeedID", w.changefeed),
-					zap.Int("workerID", w.ID))
-				return
-			case <-w.stopped:
-				log.Info("Transaction sink worker exits as closed",
-					zap.String("changefeedID", w.changefeed),
-					zap.Int("workerID", w.ID))
-				return
-			case txn := <-w.txnCh.Out():
-				if w.onEvent(txn) && w.doFlush(&flushTimeSlice) {
-					break LOOP
+			if !w.hasPending {
+				select {
+				case <-w.ctx.Done():
+					log.Info("Transaction sink worker exits as canceled",
+						zap.String("changefeedID", w.changefeed),
+						zap.Int("workerID", w.ID))
+					return
+				case <-w.stopped:
+					log.Info("Transaction sink worker exits as closed",
+						zap.String("changefeedID", w.changefeed),
+						zap.Int("workerID", w.ID))
+					return
+				case txn := <-w.txnCh.Out():
+					w.hasPending = true
+					if w.onEvent(txn) && w.doFlush(&flushTimeSlice) {
+						break LOOP
+					}
+				case now := <-overseerTimer.C:
+					totalTimeSlice = now.Sub(startToWork)
+					busyRatio := int(flushTimeSlice.Seconds() / totalTimeSlice.Seconds() * 1000)
+					w.metricTxnWorkerBusyRatio.Add(float64(busyRatio) / float64(w.workerCount))
+					startToWork = now
+					flushTimeSlice = 0
 				}
-			case <-w.timer.C:
-				if w.doFlush(&flushTimeSlice) {
-					break LOOP
+			} else {
+				select {
+				case txn := <-w.txnCh.Out():
+					if w.onEvent(txn) && w.doFlush(&flushTimeSlice) {
+						break LOOP
+					}
+				default:
+					if w.doFlush(&flushTimeSlice) {
+						break LOOP
+					}
 				}
-			case now := <-overseerTimer.C:
-				totalTimeSlice = now.Sub(startToWork)
-				busyRatio := int(flushTimeSlice.Seconds() / totalTimeSlice.Seconds() * 1000)
-				w.metricTxnWorkerBusyRatio.Add(float64(busyRatio) / float64(w.workerCount))
-				startToWork = now
-				flushTimeSlice = 0
 			}
 		}
 		log.Warn("Transaction sink worker exits unexceptedly",
@@ -165,9 +173,6 @@ func (w *worker) onEvent(txn txnWithNotifier) bool {
 	w.metricTxnWorkerHandledRows.Add(float64(len(txn.Event.Rows)))
 	w.wantMoreCallbacks = append(w.wantMoreCallbacks, txn.wantMore)
 	if w.backend.OnTxnEvent(txn.txnEvent.TxnCallbackableEvent) {
-		if !w.timer.Stop() {
-			<-w.timer.C
-		}
 		return true
 	}
 	return false
@@ -204,6 +209,6 @@ func (w *worker) doFlush(flushTimeSlice *time.Duration) bool {
 		w.wantMoreCallbacks = make([]func(), 0, 1024)
 	}
 
-	w.timer.Reset(w.flushInterval)
+	w.hasPending = false
 	return false
 }
