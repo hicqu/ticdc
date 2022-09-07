@@ -153,7 +153,7 @@ func (n *Node) AssignTo(workerID int64) {
 				delete(node.conflictCounts, unassigned)
 			}
 			node.conflictCounts[workerID]++
-			workerNum, ok := n.tryResolve()
+			workerNum, ok := node.tryResolve()
 			node.mu.Unlock()
 			if ok && !node.resolved.Swap(true) && node.onResolved != nil {
 				node.onResolved(workerNum)
@@ -173,7 +173,7 @@ func (n *Node) Remove() {
 		n.dependers.Ascend(func(node *Node) bool {
 			node.mu.Lock()
 			node.conflictCounts[n.assignedTo]--
-			workerNum, ok := n.tryResolve()
+			workerNum, ok := node.tryResolve()
 			node.mu.Unlock()
 			if ok && !node.resolved.Swap(true) && node.onResolved != nil {
 				node.onResolved(workerNum)

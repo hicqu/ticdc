@@ -48,7 +48,7 @@ func (e *txnEvent) ConflictKeys() []string {
 	for _, key := range keys {
 		e.conflictKeys = append(e.conflictKeys, string(key))
 	}
-	sort.StringSlice(e.conflictKeys)
+    sort.Slice(e.conflictKeys, func(i, j int) bool { return e.conflictKeys[i] < e.conflictKeys[j]})
 	return e.conflictKeys
 }
 
