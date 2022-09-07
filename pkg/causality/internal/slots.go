@@ -45,26 +45,32 @@ func NewSlots[E Eq[E]](numSlots int64) *Slots[E] {
 // dependee.
 func (s *Slots[E]) Add(elem E, keys []int64, onConflict func(dependee E)) {
 	for _, key := range keys {
+		key = key % s.numSlots
 		s.slots[key].mu.Lock()
 		if s.slots[key].elems == nil {
 			s.slots[key].elems = list.New()
+			s.slots[key].elems.PushBack(elem)
 		} else {
 			lastElem := s.slots[key].elems.Back().Value.(E)
-			onConflict(lastElem)
+			if !lastElem.Equals(elem) {
+				onConflict(lastElem)
+				s.slots[key].elems.PushBack(elem)
+			}
 		}
-		s.slots[key].elems.PushBack(elem)
 	}
 	// Lock those slots one by one and then unlock them one by one, so that
 	// we can avoid 2 transactions get executed interleaved.
 	for _, key := range keys {
+		key = key % s.numSlots
 		s.slots[key].mu.Unlock()
 	}
 }
 
 // Remove removes an element from the Slots.
 func (s *Slots[E]) Remove(elem E, keys []int64) {
+LOOP:
 	for _, key := range keys {
-		found := false
+		key = key % s.numSlots
 		s.slots[key].mu.Lock()
 		if s.slots[key].elems != nil {
 			for e := s.slots[key].elems.Front(); e != nil; e = e.Next() {
@@ -73,15 +79,15 @@ func (s *Slots[E]) Remove(elem E, keys []int64) {
 					if s.slots[key].elems.Len() == 0 {
 						s.slots[key].elems = nil
 					}
-					found = true
-					break
+					continue LOOP
 				}
 			}
 		}
+		panic("elem should always be found")
+	}
+	for _, key := range keys {
+		key = key % s.numSlots
 		s.slots[key].mu.Unlock()
-		if !found {
-			panic("elem should always be found")
-		}
 	}
 }
 

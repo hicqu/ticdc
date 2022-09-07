@@ -50,7 +50,8 @@ func (e *txnEvent) ConflictKeys() []int64 {
 		if _, err := hasher.Write(key); err != nil {
 			log.Panic("crc64 hasher fail")
 		}
-		e.conflictKeys = append(e.conflictKeys, int64(hasher.Sum64()))
+		hash := hasher.Sum64() >> 1 // convert uint64 to int64
+		e.conflictKeys = append(e.conflictKeys, int64(hash))
 	}
 	sort.Slice(e.conflictKeys, func(i, j int) bool { return e.conflictKeys[i] < e.conflictKeys[j] })
 	return e.conflictKeys
