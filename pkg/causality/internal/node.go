@@ -176,7 +176,7 @@ func (n *Node) Remove() {
 			workerNum, ok := n.tryResolve()
 			node.mu.Unlock()
 			if ok && !node.resolved.Swap(true) && node.onResolved != nil {
-				n.onResolved(workerNum)
+				node.onResolved(workerNum)
 			}
 			return true
 		})

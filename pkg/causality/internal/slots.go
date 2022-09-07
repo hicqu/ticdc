@@ -45,9 +45,9 @@ func NewSlots[E Eq[E]](numSlots int64) *Slots[E] {
 // Note that onConflict can be called multiple times with the same
 // dependee.
 func (s *Slots[E]) Add(elem E, keys []string, onConflict func(dependee E)) {
+	modifiedSlots := make([]*slot, 0, len(keys))
 	for _, key := range keys {
 		needInsert := true
-
 		value, _ := s.slots.LoadOrStore(key, &slot{elems: nil})
 		elemList := value.(*slot)
 		elemList.mu.Lock()
@@ -61,10 +61,12 @@ func (s *Slots[E]) Add(elem E, keys []string, onConflict func(dependee E)) {
 				onConflict(lastElem)
 			}
 		}
-
 		if needInsert {
 			elemList.elems.PushBack(elem)
 		}
+		modifiedSlots = append(modifiedSlots, elemList)
+	}
+	for _, elemList := range modifiedSlots {
 		elemList.mu.Unlock()
 	}
 }
@@ -81,6 +83,9 @@ func (s *Slots[E]) Remove(elem E, keys []string) {
 		for e := elemList.elems.Front(); e != nil; e = e.Next() {
 			if elem.Equals(e.Value.(E)) {
 				elemList.elems.Remove(e)
+				if elemList.elems.Len() == 0 {
+					elemList.elems = nil
+				}
 				break
 			}
 		}

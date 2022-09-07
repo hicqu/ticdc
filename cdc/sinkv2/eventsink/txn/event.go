@@ -16,6 +16,7 @@ package txn
 import (
 	"encoding/binary"
 	"hash/crc64"
+	"sort"
 	"time"
 
 	"github.com/pingcap/log"
@@ -47,6 +48,7 @@ func (e *txnEvent) ConflictKeys() []string {
 	for _, key := range keys {
 		e.conflictKeys = append(e.conflictKeys, string(key))
 	}
+	sort.StringSlice(e.conflictKeys)
 	return e.conflictKeys
 }
 
