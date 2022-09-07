@@ -15,7 +15,6 @@ package internal
 
 import (
 	"fmt"
-	"sort"
 	"sync"
 
 	"github.com/google/btree"
@@ -48,7 +47,15 @@ var (
 type Node struct {
 	id int64 // immutable
 
+	assignedTo workerID
+
+	onResolved func(id workerID)
+
+	resolved atomic.Bool
+
+	// Following fields are protected by `mu`.
 	mu sync.Mutex
+
 	// conflictCounts stores counts of nodes that the current node depend on,
 	// grouped by the worker ID they are assigned to.
 	conflictCounts map[workerID]int
@@ -65,11 +72,6 @@ type Node struct {
 	// (2) Google's btree package is selected because it seems to be
 	//     the most popular production-grade ordered set implementation in Go.
 	dependers *btree.BTreeG[*Node]
-
-	assignedTo workerID
-	onResolved func(id workerID)
-
-	resolved atomic.Bool
 }
 
 // NewNode creates a new node.
@@ -103,6 +105,14 @@ func (n *Node) Free() {
 
 // DependOn marks n as dependent upon target.
 func (n *Node) DependOn(target *Node) {
+	// Make sure that the conflictCounts have been created.
+	// Creating these maps is done lazily because we want to
+	// optimize for the case where there are little conflicts.
+	//
+	// NOTE: it doesn't requires any locks because at the time
+	// `n` hasn't been linked into the graph.
+	n.lazyCreateMap()
+
 	// Lock target first because we are always
 	// locking an earlier transaction first, so
 	// that there will be not deadlocking.
@@ -116,12 +126,6 @@ func (n *Node) DependOn(target *Node) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	// Make sure that the conflictCounts have
-	// been created.
-	// Creating these maps is done lazily because we want to
-	// optimize for the case where there are little conflicts.
-	n.lazyCreateMap()
-
 	if target.getOrCreateDependers().Has(n) {
 		// Return here to ensure idempotency.
 		return
@@ -131,11 +135,8 @@ func (n *Node) DependOn(target *Node) {
 	n.conflictCounts[target.assignedTo]++
 }
 
-// AssignTo assigns a node to a worker.
+// AssignTo assigns a node to a worker. Must be called with `n.mu` holded.
 func (n *Node) AssignTo(workerID int64) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
 	if n.assignedTo != unassigned {
 		panic(fmt.Sprintf(
 			"assigning an already assigned node: id %d, worker %d",
@@ -147,15 +148,16 @@ func (n *Node) AssignTo(workerID int64) {
 	if n.dependers != nil {
 		n.dependers.Ascend(func(node *Node) bool {
 			node.mu.Lock()
-			defer node.mu.Unlock()
-
 			node.conflictCounts[unassigned]--
 			if node.conflictCounts[unassigned] == 0 {
 				delete(node.conflictCounts, unassigned)
 			}
 			node.conflictCounts[workerID]++
-			node.notifyMaybeResolved()
-
+			workerNum, ok := n.tryResolve()
+			node.mu.Unlock()
+			if ok && !node.resolved.Swap(true) && node.onResolved != nil {
+				node.onResolved(workerNum)
+			}
 			return true
 		})
 	}
@@ -170,10 +172,12 @@ func (n *Node) Remove() {
 	if n.dependers != nil {
 		n.dependers.Ascend(func(node *Node) bool {
 			node.mu.Lock()
-			defer node.mu.Unlock()
-
 			node.conflictCounts[n.assignedTo]--
-			node.notifyMaybeResolved()
+			workerNum, ok := n.tryResolve()
+			node.mu.Unlock()
+			if ok && !node.resolved.Swap(true) && node.onResolved != nil {
+				n.onResolved(workerNum)
+			}
 			return true
 		})
 		n.dependers.Clear(true)
@@ -207,21 +211,6 @@ func (n *Node) OnNoConflict(fn func(id workerID)) {
 	n.onResolved = fn
 }
 
-// notifyMaybeResolved must be called with n.mu taken.
-// It should be called if n.conflictCounts is updated.
-func (n *Node) notifyMaybeResolved() {
-	workerNum, ok := n.tryResolve()
-	if !ok {
-		return
-	}
-
-	if n.onResolved != nil {
-		if !n.resolved.Swap(true) {
-			n.onResolved(workerNum)
-		}
-	}
-}
-
 // tryResolve must be called with n.mu locked.
 // Returns (_, false) if there is a conflict,
 // returns (-1, true) if there is no conflict,
@@ -243,14 +232,15 @@ func (n *Node) tryResolve() (int64, bool) {
 	}
 
 	conflictNumber := 0
-	wids := make([]int64, 0, len(n.conflictCounts))
+	var chosenWid int64 = -1
 	for wid, dep := range n.conflictCounts {
-		wids = append(wids, wid)
 		conflictNumber += dep
+		if chosenWid < wid {
+			chosenWid = wid
+		}
 	}
 	if conflictNumber == 0 {
-		sort.Slice(wids, func(i, j int) bool { return wids[i] < wids[j] })
-		return wids[len(wids)-1], true
+		return chosenWid, true
 	} else {
 		return 0, false
 	}

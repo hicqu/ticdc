@@ -27,16 +27,15 @@ type Eq[T any] interface {
 // It holds references to E, which can be used to build
 // a DAG of dependency.
 type Slots[E Eq[E]] struct {
-	mu    sync.Mutex
-	slots map[string]*list.List
-
+	// map[string]*slot
+	slots    sync.Map
 	numSlots int64
 }
 
 // NewSlots creates a new Slots.
 func NewSlots[E Eq[E]](numSlots int64) *Slots[E] {
 	return &Slots[E]{
-		slots:    make(map[string]*list.List),
+		slots:    sync.Map{},
 		numSlots: numSlots,
 	}
 }
@@ -46,45 +45,50 @@ func NewSlots[E Eq[E]](numSlots int64) *Slots[E] {
 // Note that onConflict can be called multiple times with the same
 // dependee.
 func (s *Slots[E]) Add(elem E, keys []string, onConflict func(dependee E)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	for _, key := range keys {
 		needInsert := true
-		if elemList, ok := s.slots[key]; ok {
-			if elemList.Len() > 0 {
-				lastElem := elemList.Back().Value.(E)
-				if lastElem.Equals(elem) {
-					needInsert = false
-				} else {
-					onConflict(lastElem)
-				}
-			}
+
+		value, _ := s.slots.LoadOrStore(key, &slot{elems: nil})
+		elemList := value.(*slot)
+		elemList.mu.Lock()
+		if elemList.elems == nil {
+			elemList.elems = list.New()
 		} else {
-			s.slots[key] = list.New()
+			lastElem := elemList.elems.Back().Value.(E)
+			if lastElem.Equals(elem) {
+				needInsert = false
+			} else {
+				onConflict(lastElem)
+			}
 		}
 
 		if needInsert {
-			s.slots[key].PushBack(elem)
+			elemList.elems.PushBack(elem)
 		}
+		elemList.mu.Unlock()
 	}
 }
 
 // Remove removes an element from the Slots.
 func (s *Slots[E]) Remove(elem E, keys []string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	for _, key := range keys {
-		elemList, ok := s.slots[key]
-		if !ok {
+		value, _ := s.slots.Load(key)
+		if value == nil {
 			panic("elem list is not found")
 		}
-		for e := elemList.Front(); e != nil; e = e.Next() {
+		elemList := value.(*slot)
+		elemList.mu.Lock()
+		for e := elemList.elems.Front(); e != nil; e = e.Next() {
 			if elem.Equals(e.Value.(E)) {
-				elemList.Remove(e)
+				elemList.elems.Remove(e)
 				break
 			}
 		}
+		elemList.mu.Unlock()
 	}
+}
+
+type slot struct {
+	elems *list.List
+	mu    sync.Mutex
 }
