@@ -27,15 +27,14 @@ type Eq[T any] interface {
 // It holds references to E, which can be used to build
 // a DAG of dependency.
 type Slots[E Eq[E]] struct {
-	// map[string]*slot
-	slots    sync.Map
+	slots    []slot
 	numSlots int64
 }
 
 // NewSlots creates a new Slots.
 func NewSlots[E Eq[E]](numSlots int64) *Slots[E] {
 	return &Slots[E]{
-		slots:    sync.Map{},
+		slots:    make([]slot, numSlots),
 		numSlots: numSlots,
 	}
 }
@@ -44,52 +43,45 @@ func NewSlots[E Eq[E]](numSlots int64) *Slots[E] {
 // where elem is conflicting with an existing element.
 // Note that onConflict can be called multiple times with the same
 // dependee.
-func (s *Slots[E]) Add(elem E, keys []string, onConflict func(dependee E)) {
-	modifiedSlots := make([]*slot, 0, len(keys))
+func (s *Slots[E]) Add(elem E, keys []int64, onConflict func(dependee E)) {
 	for _, key := range keys {
-		needInsert := true
-		value, _ := s.slots.LoadOrStore(key, &slot{elems: nil})
-		elemList := value.(*slot)
-		elemList.mu.Lock()
-		if elemList.elems == nil {
-			elemList.elems = list.New()
+		s.slots[key].mu.Lock()
+		if s.slots[key].elems == nil {
+			s.slots[key].elems = list.New()
 		} else {
-			lastElem := elemList.elems.Back().Value.(E)
-			if lastElem.Equals(elem) {
-				needInsert = false
-			} else {
-				onConflict(lastElem)
-			}
+			lastElem := s.slots[key].elems.Back().Value.(E)
+			onConflict(lastElem)
 		}
-		if needInsert {
-			elemList.elems.PushBack(elem)
-		}
-		modifiedSlots = append(modifiedSlots, elemList)
+		s.slots[key].elems.PushBack(elem)
 	}
-	for _, elemList := range modifiedSlots {
-		elemList.mu.Unlock()
+	// Lock those slots one by one and then unlock them one by one, so that
+	// we can avoid 2 transactions get executed interleaved.
+	for _, key := range keys {
+		s.slots[key].mu.Unlock()
 	}
 }
 
 // Remove removes an element from the Slots.
-func (s *Slots[E]) Remove(elem E, keys []string) {
+func (s *Slots[E]) Remove(elem E, keys []int64) {
 	for _, key := range keys {
-		value, _ := s.slots.Load(key)
-		if value == nil {
-			panic("elem list is not found")
-		}
-		elemList := value.(*slot)
-		elemList.mu.Lock()
-		for e := elemList.elems.Front(); e != nil; e = e.Next() {
-			if elem.Equals(e.Value.(E)) {
-				elemList.elems.Remove(e)
-				if elemList.elems.Len() == 0 {
-					elemList.elems = nil
+		found := false
+		s.slots[key].mu.Lock()
+		if s.slots[key].elems != nil {
+			for e := s.slots[key].elems.Front(); e != nil; e = e.Next() {
+				if elem.Equals(e.Value.(E)) {
+					s.slots[key].elems.Remove(e)
+					if s.slots[key].elems.Len() == 0 {
+						s.slots[key].elems = nil
+					}
+					found = true
+					break
 				}
-				break
 			}
 		}
-		elemList.mu.Unlock()
+		s.slots[key].mu.Unlock()
+		if !found {
+			panic("elem should always be found")
+		}
 	}
 }
 
