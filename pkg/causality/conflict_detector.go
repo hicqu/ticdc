@@ -31,6 +31,8 @@ type ConflictDetector[Worker worker[Txn], Txn txnEvent] struct {
 
 	// nextWorkerID is used to dispatch transactions round-robin.
 	nextWorkerID atomic.Int64
+
+	numSlots int64
 }
 
 type txnFinishedEvent[Txn txnEvent] struct {
@@ -50,22 +52,23 @@ func NewConflictDetector[Worker worker[Txn], Txn txnEvent](
 	numSlots int64,
 ) *ConflictDetector[Worker, Txn] {
 	return &ConflictDetector[Worker, Txn]{
-		workers: workers,
-		slots:   internal.NewSlots[*internal.Node](numSlots),
+		workers:  workers,
+		slots:    internal.NewSlots[*internal.Node](numSlots),
+		numSlots: numSlots,
 	}
 }
 
 // Add pushes a transaction to the ConflictDetector.
 func (d *ConflictDetector[Worker, Txn]) Add(txn Txn) error {
 	node := internal.NewNode()
-	d.slots.Add(node, txn.ConflictKeys(), func(other *internal.Node) {
+	d.slots.Add(node, txn.ConflictKeys(d.numSlots), func(other *internal.Node) {
 		// Construct a dependency map under the slots' lock.
 		node.DependOn(other)
 	})
 	node.OnNoConflict(func(workerID int64) {
 		node.AssignTo(workerID)
 		unlock := func() {
-			d.slots.Remove(node, txn.ConflictKeys())
+			d.slots.Remove(node, txn.ConflictKeys(d.numSlots))
 			node.Remove()
 			node.Free()
 		}

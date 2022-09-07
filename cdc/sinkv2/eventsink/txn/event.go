@@ -38,7 +38,7 @@ func newTxnEvent(event *eventsink.TxnCallbackableEvent) *txnEvent {
 }
 
 // ConflictKeys implements causality.txnEvent interface.
-func (e *txnEvent) ConflictKeys() []int64 {
+func (e *txnEvent) ConflictKeys(numSlots int64) []int64 {
 	if len(e.conflictKeys) > 0 {
 		return e.conflictKeys
 	}
@@ -50,7 +50,7 @@ func (e *txnEvent) ConflictKeys() []int64 {
 		if _, err := hasher.Write(key); err != nil {
 			log.Panic("crc64 hasher fail")
 		}
-		hash := hasher.Sum64() >> 1 // convert uint64 to int64
+		hash := hasher.Sum64() % uint64(numSlots)
 		e.conflictKeys = append(e.conflictKeys, int64(hash))
 	}
 	sort.Slice(e.conflictKeys, func(i, j int) bool { return e.conflictKeys[i] < e.conflictKeys[j] })

@@ -18,7 +18,8 @@ type (
 )
 
 type txnEvent interface {
-	ConflictKeys() []conflictKey
+	// The returned slice must be ordered.
+	ConflictKeys(numSlots int64) []conflictKey
 }
 
 type worker[Txn txnEvent] interface {
