@@ -110,6 +110,8 @@ func (d *ConflictDetector[Worker, Txn]) runBackgroundTasks() {
 func (d *ConflictDetector[Worker, Txn]) sendToWorker(txn Txn, unlock func(), workerID int64) {
 	if workerID == -1 {
 		workerID = d.nextWorkerID.Add(1) % int64(len(d.workers))
+	} else if workerID < 0 {
+		panic("must assign with a valid workerID or -1")
 	}
 	worker := d.workers[workerID]
 	worker.Add(txn, unlock)

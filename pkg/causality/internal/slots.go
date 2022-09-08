@@ -56,12 +56,11 @@ func (s *Slots[E]) Add(elem E, keys []int64) {
 		s.slots[key].mu.Lock()
 		if s.slots[key].elems == nil {
 			s.slots[key].elems = list.New()
-			s.slots[key].elems.PushBack(elem)
 		} else {
 			lastElem := s.slots[key].elems.Back().Value.(E)
 			dependOnList[lastElem.NodeID()] = lastElem
-			s.slots[key].elems.PushBack(elem)
 		}
+		s.slots[key].elems.PushBack(elem)
 	}
 	elem.DependOn(dependOnList)
 	// Lock those slots one by one and then unlock them one by one, so that
@@ -96,6 +95,7 @@ func (s *Slots[E]) Free(elem E, keys []int64) {
 			panic("should always find and remove slot header")
 		}
 	}
+	elem.Free()
 }
 
 type slot struct {

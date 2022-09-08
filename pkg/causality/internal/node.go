@@ -26,7 +26,8 @@ type (
 )
 
 const (
-	unassigned    = workerID(-1)
+	assignedAny   = workerID(-1)
+	unassigned    = workerID(-2)
 	invalidNodeID = int64(-1)
 )
 
@@ -48,8 +49,6 @@ type Node struct {
 	// Immutable fields.
 	id         int64
 	OnResolved func(id workerID)
-
-	resolved atomic.Bool
 
 	totalDependees    int32
 	resolvedDependees int32
@@ -81,7 +80,6 @@ func NewNode() (ret *Node) {
 	defer func() {
 		ret.id = nextNodeID.Add(1)
 		ret.OnResolved = nil
-		ret.resolved.Store(false)
 		ret.assignedTo = unassigned
 		ret.removed = false
 		ret.totalDependees = 0
@@ -96,7 +94,7 @@ func NewNode() (ret *Node) {
 }
 
 // NodeID implements interface internal.SlotNode.
-func (n *Node) NodeID(other *Node) int64 {
+func (n *Node) NodeID() int64 {
 	return n.id
 }
 
@@ -109,13 +107,14 @@ func (n *Node) DependOn(others map[int64]*Node) {
 		// Lock target and insert `n` into target.dependers.
 		target.mu.Lock()
 		defer target.mu.Unlock()
-		target.dependers.ReplaceOrInsert(n)
 		if target.assignedTo != unassigned {
 			resolvedDependees := stdAtomic.AddInt32(&n.resolvedDependees, 1)
 			n.dependees[resolvedDependees-1] = target.assignedTo
 		}
 		if target.removed {
 			stdAtomic.AddInt32(&n.removedDependees, 1)
+		} else {
+			target.getOrCreateDependers().ReplaceOrInsert(n)
 		}
 	}
 
@@ -159,7 +158,6 @@ func (n *Node) Free() {
 
 	n.id = invalidNodeID
 	n.OnResolved = nil
-	n.resolved.Store(false)
 	n.assignedTo = unassigned
 	n.removed = false
 	n.totalDependees = 0
@@ -170,9 +168,14 @@ func (n *Node) Free() {
 }
 
 // assignTo assigns a node to a worker.
-func (n *Node) assignTo(workerID int64) {
+func (n *Node) assignTo(workerID int64) bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+
+	if n.assignedTo != unassigned {
+		// Already resolved by some other guys.
+		return false
+	}
 
 	n.assignedTo = workerID
 	if n.dependers != nil {
@@ -185,24 +188,24 @@ func (n *Node) assignTo(workerID int64) {
 			return true
 		})
 	}
+	return true
 }
 
 func (n *Node) maybeResolve() {
-	if workerNum, ok := n.tryResolve(); ok && !n.resolved.Swap(true) {
+	if workerNum, ok := n.tryResolve(); ok && n.assignTo(workerNum) {
 		n.OnResolved(workerNum)
-		n.assignTo(workerNum)
 	}
 	return
 }
 
 // tryResolve must be called with n.mu locked.
 // Returns (_, false) if there is a conflict,
-// returns (-1, true) if there is no conflict,
+// returns (assignedAny, true) if there is no conflict,
 // returns (N, true) if only worker N can be used.
 func (n *Node) tryResolve() (int64, bool) {
 	if n.totalDependees == 0 {
 		// No conflicts, can select any workers.
-		return -1, true
+		return assignedAny, true
 	}
 
 	resolvedDependees := stdAtomic.LoadInt32(&n.resolvedDependees)
