@@ -26,7 +26,6 @@ type (
 )
 
 const (
-	assignedAny   = workerID(-1)
 	unassigned    = workerID(-2)
 	invalidNodeID = int64(-1)
 )
@@ -47,8 +46,9 @@ var (
 // in conflict detection.
 type Node struct {
 	// Immutable fields.
-	id         int64
-	OnResolved func(id workerID)
+	id           int64
+	OnResolved   func(id workerID)
+	RandWorkerID func() workerID
 
 	totalDependees    int32
 	resolvedDependees int32
@@ -80,6 +80,7 @@ func NewNode() (ret *Node) {
 	defer func() {
 		ret.id = nextNodeID.Add(1)
 		ret.OnResolved = nil
+		ret.RandWorkerID = nil
 		ret.assignedTo = unassigned
 		ret.removed = false
 		ret.totalDependees = 0
@@ -148,6 +149,12 @@ func (n *Node) Remove() {
 	}
 }
 
+func (n *Node) Removed() bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.removed
+}
+
 // Free implements interface internal.SlotNode.
 // It must be called if a node is no longer used.
 // We are using sync.Pool to lessen the burden of GC.
@@ -158,6 +165,7 @@ func (n *Node) Free() {
 
 	n.id = invalidNodeID
 	n.OnResolved = nil
+	n.RandWorkerID = nil
 	n.assignedTo = unassigned
 	n.removed = false
 	n.totalDependees = 0
@@ -192,20 +200,25 @@ func (n *Node) assignTo(workerID int64) bool {
 }
 
 func (n *Node) maybeResolve() {
-	if workerNum, ok := n.tryResolve(); ok && n.assignTo(workerNum) {
-		n.OnResolved(workerNum)
+	if workerNum, ok := n.tryResolve(); ok {
+		if workerNum < 0 {
+			panic("Node.tryResolve must return a valid worker ID")
+		}
+		if n.assignTo(workerNum) {
+			n.OnResolved(workerNum)
+		}
 	}
 	return
 }
 
 // tryResolve must be called with n.mu locked.
 // Returns (_, false) if there is a conflict,
-// returns (assignedAny, true) if there is no conflict,
+// returns (rand, true) if there is no conflict,
 // returns (N, true) if only worker N can be used.
 func (n *Node) tryResolve() (int64, bool) {
 	if n.totalDependees == 0 {
 		// No conflicts, can select any workers.
-		return assignedAny, true
+		return n.RandWorkerID(), true
 	}
 
 	resolvedDependees := stdAtomic.LoadInt32(&n.resolvedDependees)

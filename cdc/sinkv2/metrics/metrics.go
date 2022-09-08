@@ -66,6 +66,15 @@ var (
 			Help:      "XXX",
 			Buckets:   prometheus.ExponentialBuckets(0.01, 2, 18), // 10ms~1000s
 		}, []string{"namespace", "changefeed"})
+
+	TxnSinkDMLCallbackDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "ticdc",
+			Subsystem: "sinkv2",
+			Name:      "txn_sink_dml_callback_duration",
+			Help:      "XXX",
+			Buckets:   prometheus.ExponentialBuckets(0.01, 2, 18), // 10ms~1000s
+		}, []string{"namespace", "changefeed"})
 )
 
 // ---------- Metrics used in Statistics. ---------- //
@@ -117,6 +126,7 @@ func InitMetrics(registry *prometheus.Registry) {
 	registry.MustRegister(TxnWorkerBusyRatio)
 	registry.MustRegister(TxnWorkerHandledRows)
 	registry.MustRegister(TxnSinkDMLBatchCommitDuration)
+	registry.MustRegister(TxnSinkDMLCallbackDuration)
 
 	registry.MustRegister(ExecBatchHistogram)
 	registry.MustRegister(ExecDDLHistogram)

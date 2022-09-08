@@ -96,8 +96,8 @@ func (s *sink) WriteEvents(rows ...*eventsink.TxnCallbackableEvent) error {
 	}
 	for _, row := range rows {
 		// FIXME: remove it.
-		row.Callback()
-		row.Callback = nil
+		// row.Callback()
+		// row.Callback = nil
 		err := s.conflictDetector.Add(newTxnEvent(row))
 		if err != nil {
 			return err

@@ -26,6 +26,8 @@ type SlotNode[T any] interface {
 	DependOn(others map[int64]T)
 	// Remove the node itself and notify all dependers.
 	Remove()
+	// Check whether the node is removed or not.
+	Removed() bool
 	// Free the node itself and remove it from the graph.
 	Free()
 }
@@ -73,27 +75,20 @@ func (s *Slots[E]) Add(elem E, keys []int64) {
 // Free removes an element from the Slots.
 func (s *Slots[E]) Free(elem E, keys []int64) {
 	for _, key := range keys {
-		found := false
 		s.slots[key].mu.Lock()
 		if s.slots[key].elems != nil {
 			for e := s.slots[key].elems.Front(); e != nil; e = e.Next() {
+				if !e.Value.(E).Removed() {
+					break
+				}
 				// Keep removing garbage nodes until meet the target one.
 				s.slots[key].elems.Remove(e)
-				if elem.NodeID() == e.Value.(E).NodeID() {
-					found = true
-					break
-				} else {
-					panic("should always find and remove slot header")
-				}
 			}
 			if s.slots[key].elems.Len() == 0 {
 				s.slots[key].elems = nil
 			}
 		}
 		s.slots[key].mu.Unlock()
-		if !found {
-			panic("should always find and remove slot header")
-		}
 	}
 	elem.Free()
 }

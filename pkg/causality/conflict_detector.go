@@ -79,6 +79,7 @@ func (d *ConflictDetector[Worker, Txn]) Add(txn Txn) error {
 		}
 		d.sendToWorker(txn, unlock, workerID)
 	}
+	node.RandWorkerID = func() int64 { return d.nextWorkerID.Add(1) % int64(len(d.workers)) }
 	d.slots.Add(node, txn.ConflictKeys(d.numSlots))
 	return nil
 }
@@ -108,10 +109,8 @@ func (d *ConflictDetector[Worker, Txn]) runBackgroundTasks() {
 
 // sendToWorker should not call txn.Callback if it returns an error.
 func (d *ConflictDetector[Worker, Txn]) sendToWorker(txn Txn, unlock func(), workerID int64) {
-	if workerID == -1 {
-		workerID = d.nextWorkerID.Add(1) % int64(len(d.workers))
-	} else if workerID < 0 {
-		panic("must assign with a valid workerID or -1")
+	if workerID < 0 {
+		panic("must assign with a valid workerID")
 	}
 	worker := d.workers[workerID]
 	worker.Add(txn, unlock)
