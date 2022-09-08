@@ -18,7 +18,7 @@ type (
 )
 
 type txnEvent interface {
-	// The returned slice must be ordered.
+	// Keys are in range [0, numSlots), and must be ordered and deduped.
 	ConflictKeys(numSlots int64) []conflictKey
 }
 

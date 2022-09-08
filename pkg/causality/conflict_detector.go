@@ -61,7 +61,9 @@ func NewConflictDetector[Worker worker[Txn], Txn txnEvent](
 func (d *ConflictDetector[Worker, Txn]) Add(txn Txn) error {
 	node := internal.NewNode()
 	node.OnResolved = func(workerID int64) {
-		unlock := func() { d.slots.Remove(node, txn.ConflictKeys(d.numSlots)) }
+		unlock := func() {
+			d.slots.Remove(node, txn.ConflictKeys(d.numSlots))
+		}
 		d.sendToWorker(txn, unlock, workerID)
 	}
 	d.slots.Add(node, txn.ConflictKeys(d.numSlots))

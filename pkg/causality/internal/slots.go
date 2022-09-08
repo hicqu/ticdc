@@ -71,22 +71,25 @@ func (s *Slots[E]) Add(elem E, keys []int64) {
 
 // Remove removes an element from the Slots.
 func (s *Slots[E]) Remove(elem E, keys []int64) {
-	for _, key := range keys {
-		s.slots[key].mu.Lock()
-		if s.slots[key].elems != nil {
-			e := s.slots[key].elems.Front()
-			if elem.Equals(s.slots[key].elems.Remove(e).(E)) {
-				if s.slots[key].elems.Len() == 0 {
-					s.slots[key].elems = nil
-				}
-				continue
-			}
-		}
-		panic("should always find and remove slot header")
-	}
 	elem.Remove()
 	for _, key := range keys {
+		if !s.slots[key].mu.TryLock() {
+			continue
+		}
+		found := false
+		if s.slots[key].elems != nil {
+			for e := s.slots[key].elems.Front(); e != nil; e = e.Next() {
+				s.slots[key].elems.Remove(e)
+				if elem.Equals(e.Value.(E)) {
+					found = true
+					break
+				}
+			}
+		}
 		s.slots[key].mu.Unlock()
+		if !found {
+			panic("should always find and remove slot header")
+		}
 	}
 }
 
