@@ -24,8 +24,10 @@ type SlotNode[T any] interface {
 	Equals(other T) bool
 	// Construct a dependency on `others`.
 	DependOn(others []T)
-	// Remove the node itself.
+	// Remove the node itself and notify all dependers.
 	Remove()
+	// Free the node itself and remove it from the graph.
+	Free()
 }
 
 // Slots implements slot-based conflict detection.
@@ -69,16 +71,14 @@ func (s *Slots[E]) Add(elem E, keys []int64) {
 	}
 }
 
-// Remove removes an element from the Slots.
-func (s *Slots[E]) Remove(elem E, keys []int64) {
-	elem.Remove()
+// Free removes an element from the Slots.
+func (s *Slots[E]) Free(elem E, keys []int64) {
 	for _, key := range keys {
-		if !s.slots[key].mu.TryLock() {
-			continue
-		}
 		found := false
+		s.slots[key].mu.Lock()
 		if s.slots[key].elems != nil {
 			for e := s.slots[key].elems.Front(); e != nil; e = e.Next() {
+				// Keep removing garbage nodes until meet the target one.
 				s.slots[key].elems.Remove(e)
 				if elem.Equals(e.Value.(E)) {
 					found = true

@@ -60,6 +60,7 @@ type Node struct {
 	mu sync.Mutex
 
 	assignedTo workerID
+	removed    bool
 
 	// dependers is an ordered set for all nodes that
 	// conflict with the current node.
@@ -80,7 +81,9 @@ func NewNode() (ret *Node) {
 	defer func() {
 		ret.id = nextNodeID.Add(1)
 		ret.OnResolved = nil
+		ret.resolved.Store(false)
 		ret.assignedTo = unassigned
+		ret.removed = false
 		ret.totalDependees = 0
 		ret.resolvedDependees = 0
 		ret.removedDependees = 0
@@ -111,6 +114,9 @@ func (n *Node) DependOn(others []*Node) {
 			resolvedDependees := stdAtomic.AddInt32(&n.resolvedDependees, 1)
 			n.dependees[resolvedDependees-1] = target.assignedTo
 		}
+		if target.removed {
+			stdAtomic.AddInt32(&n.removedDependees, 1)
+		}
 	}
 
 	n.totalDependees += int32(len(others))
@@ -122,14 +128,45 @@ func (n *Node) DependOn(others []*Node) {
 	for _, target := range others {
 		depend(target)
 	}
-
 	n.maybeResolve()
 }
 
 // Remove implements interface internal.SlotNode.
 func (n *Node) Remove() {
-	n.remove()
-	n.free()
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.removed = true
+	if n.dependers != nil {
+		n.dependers.Ascend(func(node *Node) bool {
+			removedDependees := stdAtomic.AddInt32(&node.removedDependees, 1)
+			if removedDependees == node.totalDependees {
+				node.maybeResolve()
+			}
+			return true
+		})
+		n.dependers.Clear(true)
+	}
+}
+
+// Free implements interface internal.SlotNode.
+// It must be called if a node is no longer used.
+// We are using sync.Pool to lessen the burden of GC.
+func (n *Node) Free() {
+	if n.id == invalidNodeID {
+		panic("double free")
+	}
+
+	n.id = invalidNodeID
+	n.OnResolved = nil
+	n.resolved.Store(false)
+	n.assignedTo = unassigned
+	n.removed = false
+	n.totalDependees = 0
+	n.resolvedDependees = 0
+	n.removedDependees = 0
+
+	nodePool.Put(n)
 }
 
 // assignTo assigns a node to a worker.
@@ -148,38 +185,6 @@ func (n *Node) assignTo(workerID int64) {
 			return true
 		})
 	}
-}
-
-// remove should be called after the transaction corresponding to the node is finished.
-func (n *Node) remove() {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-
-	if n.dependers != nil {
-		n.dependers.Ascend(func(node *Node) bool {
-			removedDependees := stdAtomic.AddInt32(&node.removedDependees, 1)
-			if removedDependees == node.totalDependees {
-				node.maybeResolve()
-			}
-			return true
-		})
-		n.dependers.Clear(true)
-	}
-}
-
-// free must be called if a node is no longer used.
-// We are using sync.Pool to lessen the burden of GC.
-func (n *Node) free() {
-	if n.id == invalidNodeID {
-		panic("double free")
-	}
-
-	n.id = invalidNodeID
-	n.assignedTo = unassigned
-	n.OnResolved = nil
-	n.resolved.Store(false)
-
-	nodePool.Put(n)
 }
 
 func (n *Node) maybeResolve() {

@@ -14,6 +14,9 @@
 package causality
 
 import (
+	"sync"
+
+	"github.com/pingcap/tiflow/engine/pkg/containers"
 	"github.com/pingcap/tiflow/pkg/causality/internal"
 	"go.uber.org/atomic"
 )
@@ -32,6 +35,11 @@ type ConflictDetector[Worker worker[Txn], Txn txnEvent] struct {
 
 	// nextWorkerID is used to dispatch transactions round-robin.
 	nextWorkerID atomic.Int64
+
+	// For a uackground loop to GC nodes.
+	garbageNodes *containers.SliceQueue[txnFinishedEvent[Txn]]
+	wg           sync.WaitGroup
+	closeCh      chan struct{}
 }
 
 type txnFinishedEvent[Txn txnEvent] struct {
@@ -39,22 +47,26 @@ type txnFinishedEvent[Txn txnEvent] struct {
 	node *internal.Node
 }
 
-type txnResolvedEvent[Txn txnEvent] struct {
-	txn      Txn
-	node     *internal.Node
-	workerID int64
-}
-
 // NewConflictDetector creates a new ConflictDetector.
 func NewConflictDetector[Worker worker[Txn], Txn txnEvent](
 	workers []Worker,
 	numSlots int64,
 ) *ConflictDetector[Worker, Txn] {
-	return &ConflictDetector[Worker, Txn]{
-		workers:  workers,
-		slots:    internal.NewSlots[*internal.Node](numSlots),
-		numSlots: numSlots,
+	ret := &ConflictDetector[Worker, Txn]{
+		workers:      workers,
+		slots:        internal.NewSlots[*internal.Node](numSlots),
+		numSlots:     numSlots,
+		garbageNodes: containers.NewSliceQueue[txnFinishedEvent[Txn]](),
+		closeCh:      make(chan struct{}),
 	}
+
+	ret.wg.Add(1)
+	go func() {
+		defer ret.wg.Done()
+		ret.runBackgroundTasks()
+	}()
+
+	return ret
 }
 
 // Add pushes a transaction to the ConflictDetector.
@@ -62,7 +74,8 @@ func (d *ConflictDetector[Worker, Txn]) Add(txn Txn) error {
 	node := internal.NewNode()
 	node.OnResolved = func(workerID int64) {
 		unlock := func() {
-			d.slots.Remove(node, txn.ConflictKeys(d.numSlots))
+			node.Remove()
+			d.garbageNodes.Push(txnFinishedEvent[Txn]{txn, node})
 		}
 		d.sendToWorker(txn, unlock, workerID)
 	}
@@ -72,6 +85,25 @@ func (d *ConflictDetector[Worker, Txn]) Add(txn Txn) error {
 
 // Close closes the ConflictDetector.
 func (d *ConflictDetector[Worker, Txn]) Close() {
+	close(d.closeCh)
+	d.wg.Wait()
+}
+
+func (d *ConflictDetector[Worker, Txn]) runBackgroundTasks() {
+	for {
+		select {
+		case <-d.closeCh:
+			return
+		case <-d.garbageNodes.C:
+			for {
+				event, ok := d.garbageNodes.Pop()
+				if !ok {
+					break
+				}
+				d.slots.Free(event.node, event.txn.ConflictKeys(d.numSlots))
+			}
+		}
+	}
 }
 
 // sendToWorker should not call txn.Callback if it returns an error.
