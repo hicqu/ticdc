@@ -85,6 +85,9 @@ func (s *Slots[E]) Remove(elem E, keys []int64) {
 					break
 				}
 			}
+            if s.slots[key].elems.Len() == 0 {
+                s.slots[key].elems = nil
+            }
 		}
 		s.slots[key].mu.Unlock()
 		if !found {
