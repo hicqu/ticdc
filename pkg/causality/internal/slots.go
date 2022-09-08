@@ -18,21 +18,26 @@ import (
 	"sync"
 )
 
-// Eq describes objects that can be compared for equality.
-type Eq[T any] interface {
+// SlotNode describes objects that can be compared for equality.
+type SlotNode[T any] interface {
+	// Equals tells whether two pointers to nodes are equal.
 	Equals(other T) bool
+	// Construct a dependency on `others`.
+	DependOn(others []T)
+	// Remove the node itself.
+	Remove()
 }
 
 // Slots implements slot-based conflict detection.
 // It holds references to E, which can be used to build
 // a DAG of dependency.
-type Slots[E Eq[E]] struct {
+type Slots[E SlotNode[E]] struct {
 	slots    []slot
 	numSlots int64
 }
 
 // NewSlots creates a new Slots.
-func NewSlots[E Eq[E]](numSlots int64) *Slots[E] {
+func NewSlots[E SlotNode[E]](numSlots int64) *Slots[E] {
 	return &Slots[E]{
 		slots:    make([]slot, numSlots),
 		numSlots: numSlots,
@@ -43,7 +48,8 @@ func NewSlots[E Eq[E]](numSlots int64) *Slots[E] {
 // where elem is conflicting with an existing element.
 // Note that onConflict can be called multiple times with the same
 // dependee.
-func (s *Slots[E]) Add(elem E, keys []int64, onConflict func(dependee E)) {
+func (s *Slots[E]) Add(elem E, keys []int64) {
+	dependOnList := make([]E, 0, len(keys))
 	for _, key := range keys {
 		s.slots[key].mu.Lock()
 		if s.slots[key].elems == nil {
@@ -51,12 +57,11 @@ func (s *Slots[E]) Add(elem E, keys []int64, onConflict func(dependee E)) {
 			s.slots[key].elems.PushBack(elem)
 		} else {
 			lastElem := s.slots[key].elems.Back().Value.(E)
-			if !lastElem.Equals(elem) {
-				onConflict(lastElem)
-				s.slots[key].elems.PushBack(elem)
-			}
+			dependOnList = append(dependOnList, lastElem)
+			s.slots[key].elems.PushBack(elem)
 		}
 	}
+	elem.DependOn(dependOnList)
 	// Lock those slots one by one and then unlock them one by one, so that
 	// we can avoid 2 transactions get executed interleaved.
 	for _, key := range keys {
@@ -66,22 +71,20 @@ func (s *Slots[E]) Add(elem E, keys []int64, onConflict func(dependee E)) {
 
 // Remove removes an element from the Slots.
 func (s *Slots[E]) Remove(elem E, keys []int64) {
-LOOP:
 	for _, key := range keys {
 		s.slots[key].mu.Lock()
 		if s.slots[key].elems != nil {
-			for e := s.slots[key].elems.Front(); e != nil; e = e.Next() {
-				if elem.Equals(e.Value.(E)) {
-					s.slots[key].elems.Remove(e)
-					if s.slots[key].elems.Len() == 0 {
-						s.slots[key].elems = nil
-					}
-					continue LOOP
+			e := s.slots[key].elems.Front()
+			if elem.Equals(s.slots[key].elems.Remove(e).(E)) {
+				if s.slots[key].elems.Len() == 0 {
+					s.slots[key].elems = nil
 				}
+				continue
 			}
 		}
-		panic("elem should always be found")
+		panic("should always find and remove slot header")
 	}
+	elem.Remove()
 	for _, key := range keys {
 		s.slots[key].mu.Unlock()
 	}
