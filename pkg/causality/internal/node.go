@@ -14,7 +14,6 @@
 package internal
 
 import (
-	"fmt"
 	"sync"
 	stdAtomic "sync/atomic"
 
@@ -80,6 +79,7 @@ type Node struct {
 func NewNode() (ret *Node) {
 	defer func() {
 		ret.id = nextNodeID.Add(1)
+		ret.OnResolved = nil
 		ret.assignedTo = unassigned
 		ret.totalDependees = 0
 		ret.resolvedDependees = 0
@@ -99,7 +99,6 @@ func (n *Node) Equals(other *Node) bool {
 
 // DependOn implements interface internal.SlotNode.
 func (n *Node) DependOn(others []*Node) {
-	fmt.Printf("Node.DependOn %d nodes\n", len(others))
 	depend := func(target *Node) {
 		if target.id == n.id {
 			panic("you cannot depend on yourself")
