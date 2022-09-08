@@ -27,12 +27,12 @@ var _ TableSink = (*eventTableSink[*model.RowChangedEvent])(nil)
 var _ TableSink = (*eventTableSink[*model.SingleTableTxn])(nil)
 
 type eventTableSink[E eventsink.TableEvent] struct {
-	tableID         model.TableID
-	eventID         uint64
-	maxResolvedTs   model.ResolvedTs
-	backendSink     eventsink.EventSink[E]
-	progressTracker *progressTracker
-	eventAppender   eventsink.Appender[E]
+	tableID       model.TableID
+	eventID       uint64
+	maxResolvedTs model.ResolvedTs
+	maxInflushing model.ResolvedTs
+	backendSink   eventsink.EventSink[E]
+	eventAppender eventsink.Appender[E]
 	// NOTICE: It is ordered by commitTs.
 	eventBuffer []E
 	state       state.TableSinkState
@@ -45,14 +45,14 @@ func New[E eventsink.TableEvent](
 	appender eventsink.Appender[E],
 ) *eventTableSink[E] {
 	return &eventTableSink[E]{
-		tableID:         tableID,
-		eventID:         0,
-		maxResolvedTs:   model.NewResolvedTs(0),
-		backendSink:     backendSink,
-		progressTracker: newProgressTracker(tableID),
-		eventAppender:   appender,
-		eventBuffer:     make([]E, 0, 1024),
-		state:           state.TableSinkSinking,
+		tableID:       tableID,
+		eventID:       0,
+		maxResolvedTs: model.NewResolvedTs(0),
+		maxInflushing: model.NewResolvedTs(0),
+		backendSink:   backendSink,
+		eventAppender: appender,
+		eventBuffer:   make([]E, 0, 1024),
+		state:         state.TableSinkSinking,
 	}
 }
 
@@ -73,10 +73,10 @@ func (e *eventTableSink[E]) UpdateResolvedTs(resolvedTs model.ResolvedTs) error 
 	})
 	// Despite the lack of data, we have to move forward with progress.
 	if i == 0 {
-		e.progressTracker.addResolvedTs(e.genEventID(), resolvedTs)
 		return nil
 	}
 	resolvedEvents := e.eventBuffer[:i]
+	e.maxInflushing = model.NewResolvedTs(resolvedEvents[i-1].GetCommitTs())
 	e.eventBuffer = append(make([]E, 0, len(e.eventBuffer[i:])), e.eventBuffer[i:]...)
 
 	// We have to create a new slice for the rest of the elements,
@@ -85,36 +85,25 @@ func (e *eventTableSink[E]) UpdateResolvedTs(resolvedTs model.ResolvedTs) error 
 
 	for _, ev := range resolvedEvents {
 		// We have to record the event ID for the callback.
-		eventID := e.genEventID()
 		ce := &eventsink.CallbackableEvent[E]{
-			Event: ev,
-			Callback: func() {
-				e.progressTracker.remove(eventID)
-			},
+			Event:     ev,
+			Callback:  func() {},
 			SinkState: &e.state,
 		}
 		resolvedCallbackableEvents = append(resolvedCallbackableEvents, ce)
-		e.progressTracker.addEvent(eventID)
 	}
-	// Do not forget to add the resolvedTs to progressTracker.
-	e.progressTracker.addResolvedTs(e.genEventID(), resolvedTs)
 	return e.backendSink.WriteEvents(resolvedCallbackableEvents...)
 }
 
 func (e *eventTableSink[E]) GetCheckpointTs() model.ResolvedTs {
-	return e.progressTracker.minTs()
+	return e.maxInflushing
 }
 
 // Close the table sink and wait for all callbacks be called.
 // Notice: It will be blocked until all callbacks be called.
 func (e *eventTableSink[E]) Close(ctx context.Context) error {
 	e.state.Store(state.TableSinkStopping)
-	err := e.progressTracker.close(ctx)
-	if err != nil {
-		return err
-	}
 	e.state.Store(state.TableSinkStopped)
-
 	return nil
 }
 
