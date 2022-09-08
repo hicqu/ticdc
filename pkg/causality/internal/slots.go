@@ -20,10 +20,10 @@ import (
 
 // SlotNode describes objects that can be compared for equality.
 type SlotNode[T any] interface {
-	// Equals tells whether two pointers to nodes are equal.
-	Equals(other T) bool
+	// NodeID tells the node's ID.
+	NodeID() int64
 	// Construct a dependency on `others`.
-	DependOn(others []T)
+	DependOn(others map[int64]T)
 	// Remove the node itself and notify all dependers.
 	Remove()
 	// Free the node itself and remove it from the graph.
@@ -51,7 +51,7 @@ func NewSlots[E SlotNode[E]](numSlots int64) *Slots[E] {
 // Note that onConflict can be called multiple times with the same
 // dependee.
 func (s *Slots[E]) Add(elem E, keys []int64) {
-	dependOnList := make([]E, 0, len(keys))
+	dependOnList := make(map[int64]E, len(keys))
 	for _, key := range keys {
 		s.slots[key].mu.Lock()
 		if s.slots[key].elems == nil {
@@ -59,7 +59,7 @@ func (s *Slots[E]) Add(elem E, keys []int64) {
 			s.slots[key].elems.PushBack(elem)
 		} else {
 			lastElem := s.slots[key].elems.Back().Value.(E)
-			dependOnList = append(dependOnList, lastElem)
+			dependOnList[lastElem.NodeID()] = lastElem
 			s.slots[key].elems.PushBack(elem)
 		}
 	}
@@ -80,9 +80,11 @@ func (s *Slots[E]) Free(elem E, keys []int64) {
 			for e := s.slots[key].elems.Front(); e != nil; e = e.Next() {
 				// Keep removing garbage nodes until meet the target one.
 				s.slots[key].elems.Remove(e)
-				if elem.Equals(e.Value.(E)) {
+				if elem.NodeID() == e.Value.(E).NodeID() {
 					found = true
 					break
+				} else {
+					panic("should always find and remove slot header")
 				}
 			}
 			if s.slots[key].elems.Len() == 0 {

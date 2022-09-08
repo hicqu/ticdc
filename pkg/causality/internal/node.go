@@ -95,13 +95,13 @@ func NewNode() (ret *Node) {
 	return new(Node)
 }
 
-// Equals implements interface internal.SlotNode.
-func (n *Node) Equals(other *Node) bool {
-	return n.id == other.id
+// NodeID implements interface internal.SlotNode.
+func (n *Node) NodeID(other *Node) int64 {
+	return n.id
 }
 
 // DependOn implements interface internal.SlotNode.
-func (n *Node) DependOn(others []*Node) {
+func (n *Node) DependOn(others map[int64]*Node) {
 	depend := func(target *Node) {
 		if target.id == n.id {
 			panic("you cannot depend on yourself")
@@ -109,7 +109,7 @@ func (n *Node) DependOn(others []*Node) {
 		// Lock target and insert `n` into target.dependers.
 		target.mu.Lock()
 		defer target.mu.Unlock()
-		target.getOrCreateDependers().ReplaceOrInsert(n)
+		target.dependers.ReplaceOrInsert(n)
 		if target.assignedTo != unassigned {
 			resolvedDependees := stdAtomic.AddInt32(&n.resolvedDependees, 1)
 			n.dependees[resolvedDependees-1] = target.assignedTo
@@ -119,7 +119,7 @@ func (n *Node) DependOn(others []*Node) {
 		}
 	}
 
-	n.totalDependees += int32(len(others))
+	n.totalDependees = int32(len(others))
 	n.dependees = make([]int64, 0, n.totalDependees)
 	for i := 0; i < int(n.totalDependees); i++ {
 		n.dependees = append(n.dependees, unassigned)

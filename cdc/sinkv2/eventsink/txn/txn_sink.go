@@ -95,6 +95,9 @@ func (s *sink) WriteEvents(rows ...*eventsink.TxnCallbackableEvent) error {
 		return errors.Trace(errors.New("closed sink"))
 	}
 	for _, row := range rows {
+		// FIXME: remove it after finish tests.
+		row.Callback()
+		row.Callback = nil
 		err := s.conflictDetector.Add(newTxnEvent(row))
 		if err != nil {
 			return err
