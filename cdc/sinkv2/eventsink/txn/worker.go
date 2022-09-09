@@ -50,17 +50,27 @@ type worker struct {
 	metricConflictDetectDuration prometheus.Observer
 	metricTxnWorkerFlushDuration prometheus.Observer
 	metricTxnWorkerBusyRatio     prometheus.Counter
+<<<<<<< HEAD
 	metricTxnWorkerHandledRows   prometheus.Counter
 
 	// Fields only used in the background loop.
 	timer             *time.Timer
 	flushInterval     time.Duration
 	hasPending        bool
+=======
+
+	// Fields only used in the background loop.
+	flushInterval     time.Duration
+	timer             *time.Timer
+>>>>>>> master
 	wantMoreCallbacks []func()
 }
 
 func newWorker(ctx context.Context, ID int, backend backend, errCh chan<- error, workerCount int) *worker {
+<<<<<<< HEAD
 	wid := fmt.Sprintf("%d", ID)
+=======
+>>>>>>> master
 	changefeedID := contextutil.ChangefeedIDFromCtx(ctx)
 	return &worker{
 		ctx:         ctx,
@@ -76,11 +86,16 @@ func newWorker(ctx context.Context, ID int, backend backend, errCh chan<- error,
 		metricConflictDetectDuration: metrics.ConflictDetectDuration.WithLabelValues(changefeedID.Namespace, changefeedID.ID),
 		metricTxnWorkerFlushDuration: metrics.TxnWorkerFlushDuration.WithLabelValues(changefeedID.Namespace, changefeedID.ID),
 		metricTxnWorkerBusyRatio:     metrics.TxnWorkerBusyRatio.WithLabelValues(changefeedID.Namespace, changefeedID.ID),
+<<<<<<< HEAD
 		metricTxnWorkerHandledRows:   metrics.TxnWorkerHandledRows.WithLabelValues(changefeedID.Namespace, changefeedID.ID, wid),
 
 		flushInterval:     backend.MaxFlushInterval(),
 		hasPending:        false,
 		wantMoreCallbacks: make([]func(), 0, 1024),
+=======
+
+		flushInterval: backend.MaxFlushInterval(),
+>>>>>>> master
 	}
 }
 
@@ -208,6 +223,7 @@ func (w *worker) doFlush(flushTimeSlice *time.Duration, needStopTimer bool) bool
 	if needStopTimer && !w.timer.Stop() {
 		<-w.timer.C
 	}
+
 	w.timer.Reset(w.flushInterval)
 	w.hasPending = false
 	return false
