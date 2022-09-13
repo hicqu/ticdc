@@ -89,9 +89,11 @@ func NewNode() (ret *Node) {
 	}()
 
 	if obj := nodePool.Get(); obj != nil {
-		return obj.(*Node)
+		ret = obj.(*Node)
+	} else {
+		ret = new(Node)
 	}
-	return new(Node)
+	return
 }
 
 // NodeID implements interface internal.SlotNode.
@@ -114,8 +116,8 @@ func (n *Node) DependOn(others map[int64]*Node) {
 		}
 		if target.removed {
 			stdAtomic.AddInt32(&n.removedDependees, 1)
-		} else {
-			target.getOrCreateDependers().ReplaceOrInsert(n)
+		} else if _, exist := target.getOrCreateDependers().ReplaceOrInsert(n); exist {
+			panic("should never exist")
 		}
 	}
 
@@ -128,6 +130,7 @@ func (n *Node) DependOn(others map[int64]*Node) {
 	for _, target := range others {
 		depend(target)
 	}
+
 	n.maybeResolve()
 }
 
@@ -146,6 +149,7 @@ func (n *Node) Remove() {
 			return true
 		})
 		n.dependers.Clear(true)
+		n.dependers = nil
 	}
 }
 
@@ -166,11 +170,11 @@ func (n *Node) Free() {
 	n.id = invalidNodeID
 	n.OnResolved = nil
 	n.RandWorkerID = nil
-	n.assignedTo = unassigned
-	n.removed = false
 	n.totalDependees = 0
 	n.resolvedDependees = 0
 	n.removedDependees = 0
+	n.assignedTo = unassigned
+	n.removed = false
 
 	nodePool.Put(n)
 }
@@ -205,7 +209,12 @@ func (n *Node) maybeResolve() {
 			panic("Node.tryResolve must return a valid worker ID")
 		}
 		if n.assignTo(workerNum) {
-			n.OnResolved(workerNum)
+			if n.OnResolved != nil {
+				n.OnResolved(workerNum)
+				n.OnResolved = nil
+			} else {
+				panic("resolve multiple")
+			}
 		}
 	}
 	return
@@ -229,7 +238,7 @@ func (n *Node) tryResolve() (int64, bool) {
 			return n.dependees[0], true
 		}
 	}
-	return 0, false
+	return unassigned, false
 }
 
 func (n *Node) getOrCreateDependers() *btree.BTreeG[*Node] {
