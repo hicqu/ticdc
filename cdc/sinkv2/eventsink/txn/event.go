@@ -47,6 +47,7 @@ func (e *txnEvent) ConflictKeys(numSlots int64) []int64 {
 	return e.conflictKeys
 }
 
+// genTxnKeys returns hash keys for `txn`. All keys are in [0, numSlots).
 func genTxnKeys(txn *model.SingleTableTxn, numSlots int64) []int64 {
 	if len(txn.Rows) == 0 {
 		return nil

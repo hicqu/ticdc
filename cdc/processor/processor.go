@@ -960,7 +960,7 @@ func (p *processor) createTablePipelineImpl(
 		}
 
 	} else {
-		s := p.sinkV2Factory.CreateTableSink(tableID)
+		s := p.sinkV2Factory.CreateTableSink(tableID, p.metricsTableSinkTotalRows)
 		table, err = pipeline.NewTableActor(
 			ctx,
 			p.upstream,
@@ -976,13 +976,6 @@ func (p *processor) createTablePipelineImpl(
 			return nil, errors.Trace(err)
 		}
 	}
-
-	log.Info("Add table pipeline", zap.Int64("tableID", tableID),
-		zap.String("namespace", p.changefeedID.Namespace),
-		zap.String("changefeed", p.changefeedID.ID),
-		zap.String("name", table.Name()),
-		zap.Any("replicaInfo", replicaInfo),
-		zap.Uint64("globalResolvedTs", p.changefeed.Status.ResolvedTs))
 
 	return table, nil
 }
