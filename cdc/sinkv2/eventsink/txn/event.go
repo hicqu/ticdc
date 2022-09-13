@@ -42,10 +42,13 @@ func (e *txnEvent) ConflictKeys(numSlots int64) []int64 {
 	if len(e.conflictKeys) > 0 {
 		return e.conflictKeys
 	}
-	e.conflictKeys = genTxnKeys(e.TxnCallbackableEvent.Event, numSlots)
+	keys := genTxnKeys(e.TxnCallbackableEvent.Event, numSlots)
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	e.conflictKeys = keys
 	return e.conflictKeys
 }
 
+// genTxnKeys returns hash keys for `txn`. All keys are in [0, numSlots).
 func genTxnKeys(txn *model.SingleTableTxn, numSlots int64) []int64 {
 	if len(txn.Rows) == 0 {
 		return nil
@@ -65,7 +68,6 @@ func genTxnKeys(txn *model.SingleTableTxn, numSlots int64) []int64 {
 	for key := range hashRes {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
 	return keys
 }
 

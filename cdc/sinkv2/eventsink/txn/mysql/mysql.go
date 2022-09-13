@@ -55,9 +55,9 @@ type mysqlBackend struct {
 	events []*eventsink.TxnCallbackableEvent
 	rows   int
 
-	statistics                          *metrics.Statistics
-	metricTxnSinkDMLBatchCommitDuration prometheus.Observer
-	metricTxnSinkDMLCallbackDuration    prometheus.Observer
+	statistics                    *metrics.Statistics
+	metricTxnSinkDMLBatchCommit   prometheus.Observer
+	metricTxnSinkDMLBatchCallback prometheus.Observer
 }
 
 // NewMySQLBackends creates a new MySQL sink using schema storage
@@ -92,13 +92,13 @@ func NewMySQLBackends(
 	backends := make([]*mysqlBackend, 0, cfg.WorkerCount)
 	for i := 0; i < cfg.WorkerCount; i++ {
 		backends = append(backends, &mysqlBackend{
-			changefeed:                          changefeed,
-			db:                                  db,
-			cfg:                                 cfg,
-			dmlMaxRetry:                         defaultDMLMaxRetry,
-			statistics:                          statistics,
-			metricTxnSinkDMLBatchCommitDuration: metrics.TxnSinkDMLBatchCommitDuration.WithLabelValues(changefeedID.Namespace, changefeedID.ID),
-			metricTxnSinkDMLCallbackDuration:    metrics.TxnSinkDMLCallbackDuration.WithLabelValues(changefeedID.Namespace, changefeedID.ID),
+			changefeed:                    changefeed,
+			db:                            db,
+			cfg:                           cfg,
+			dmlMaxRetry:                   defaultDMLMaxRetry,
+			statistics:                    statistics,
+			metricTxnSinkDMLBatchCommit:   metrics.TxnSinkDMLBatchCommit.WithLabelValues(changefeedID.Namespace, changefeedID.ID),
+			metricTxnSinkDMLBatchCallback: metrics.TxnSinkDMLBatchCallback.WithLabelValues(changefeedID.Namespace, changefeedID.ID),
 		})
 	}
 
@@ -149,8 +149,8 @@ func (s *mysqlBackend) Flush(ctx context.Context) (err error) {
 	for _, callback := range dmls.callbacks {
 		callback()
 	}
-	s.metricTxnSinkDMLBatchCommitDuration.Observe(startCallback.Sub(start).Seconds())
-	s.metricTxnSinkDMLCallbackDuration.Observe(time.Since(startCallback).Seconds())
+	s.metricTxnSinkDMLBatchCommit.Observe(startCallback.Sub(start).Seconds())
+	s.metricTxnSinkDMLBatchCallback.Observe(time.Since(startCallback).Seconds())
 
 	// Be friently to GC.
 	for i := 0; i < len(s.events); i++ {

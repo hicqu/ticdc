@@ -58,21 +58,21 @@ var (
 			Help:      "Busy ratio (X ms in 1s) for all workers.",
 		}, []string{"namespace", "changefeed", "id"})
 
-	TxnSinkDMLBatchCommitDuration = prometheus.NewHistogramVec(
+	TxnSinkDMLBatchCommit = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: "ticdc",
 			Subsystem: "sinkv2",
 			Name:      "txn_sink_dml_batch_commit",
-			Help:      "XXX",
+			Help:      "Duration of committing a DML batch",
 			Buckets:   prometheus.ExponentialBuckets(0.01, 2, 18), // 10ms~1000s
 		}, []string{"namespace", "changefeed"})
 
-	TxnSinkDMLCallbackDuration = prometheus.NewHistogramVec(
+	TxnSinkDMLBatchCallback = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Namespace: "ticdc",
 			Subsystem: "sinkv2",
-			Name:      "txn_sink_dml_callback_duration",
-			Help:      "XXX",
+			Name:      "txn_sink_dml_batch_callback",
+			Help:      "Duration of execuing a batch of callbacks",
 			Buckets:   prometheus.ExponentialBuckets(0.01, 2, 18), // 10ms~1000s
 		}, []string{"namespace", "changefeed"})
 )
@@ -125,8 +125,8 @@ func InitMetrics(registry *prometheus.Registry) {
 	registry.MustRegister(TxnWorkerFlushDuration)
 	registry.MustRegister(TxnWorkerBusyRatio)
 	registry.MustRegister(TxnWorkerHandledRows)
-	registry.MustRegister(TxnSinkDMLBatchCommitDuration)
-	registry.MustRegister(TxnSinkDMLCallbackDuration)
+	registry.MustRegister(TxnSinkDMLBatchCommit)
+	registry.MustRegister(TxnSinkDMLBatchCallback)
 
 	registry.MustRegister(ExecBatchHistogram)
 	registry.MustRegister(ExecDDLHistogram)
