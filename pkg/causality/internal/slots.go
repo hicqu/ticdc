@@ -53,13 +53,13 @@ func (s *Slots[E]) Add(elem E, keys []int64) {
 	dependOnList := make(map[int64]E, len(keys))
 	for _, key := range keys {
 		s.slots[key].mu.Lock()
-        if s.slots[key].tail == nil {
-            s.slots[key].tail = new(E)
-        } else {
+		if s.slots[key].tail == nil {
+			s.slots[key].tail = new(E)
+		} else {
 			prevID := (*s.slots[key].tail).NodeID()
 			dependOnList[prevID] = *s.slots[key].tail
-        }
-        *s.slots[key].tail = elem
+		}
+		*s.slots[key].tail = elem
 	}
 	elem.DependOn(dependOnList)
 	// Lock those slots one by one and then unlock them one by one, so that
@@ -73,9 +73,9 @@ func (s *Slots[E]) Add(elem E, keys []int64) {
 func (s *Slots[E]) Free(elem E, keys []int64) {
 	for _, key := range keys {
 		s.slots[key].mu.Lock()
-        if s.slots[key].tail != nil && (*s.slots[key].tail).NodeID() == elem.NodeID() {
+		if s.slots[key].tail != nil && (*s.slots[key].tail).NodeID() == elem.NodeID() {
 			s.slots[key].tail = nil
-        }
+		}
 		s.slots[key].mu.Unlock()
 	}
 	elem.Free()

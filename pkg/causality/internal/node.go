@@ -112,7 +112,7 @@ func (n *Node) DependOn(others map[int64]*Node) {
 		defer target.mu.Unlock()
 		if target.assignedTo != unassigned {
 			resolvedDependees := stdAtomic.AddInt32(&n.resolvedDependees, 1)
-			n.dependees[resolvedDependees-1] = target.assignedTo
+			stdAtomic.StoreInt64(&n.dependees[resolvedDependees-1], target.assignedTo)
 		}
 		if target.removed {
 			stdAtomic.AddInt32(&n.removedDependees, 1)
@@ -187,7 +187,7 @@ func (n *Node) assignTo(workerID int64) bool {
 	if n.dependers != nil {
 		n.dependers.Ascend(func(node *Node) bool {
 			resolvedDependees := stdAtomic.AddInt32(&node.resolvedDependees, 1)
-			node.dependees[resolvedDependees-1] = workerID
+			stdAtomic.StoreInt64(&node.dependees[resolvedDependees-1], workerID)
 			if resolvedDependees == node.totalDependees {
 				node.maybeResolve()
 			}
@@ -228,9 +228,11 @@ func (n *Node) tryResolve() (int64, bool) {
 	if resolvedDependees == n.totalDependees {
 		// NOTE: We don't pick the last unremoved worker because lots of tasks can be
 		// attached to that worker after a time.
-		if n.totalDependees == 1 || n.totalDependees == stdAtomic.LoadInt32(&n.removedDependees) {
-			return n.dependees[0], true
-		}
+		if n.totalDependees == 1 {
+            return stdAtomic.LoadInt64(&n.dependees[0]), true
+        } else if n.totalDependees == stdAtomic.LoadInt32(&n.removedDependees) {
+            return n.RandWorkerID(), true
+        }
 	}
 	return unassigned, false
 }
