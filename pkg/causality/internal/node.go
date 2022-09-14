@@ -213,7 +213,7 @@ func (n *Node) maybeResolve() {
 				n.OnResolved(workerNum)
 				n.OnResolved = nil
 			} else {
-				panic("resolve multiple")
+				panic("resolve multiple times")
 			}
 		}
 	}
