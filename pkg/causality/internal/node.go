@@ -153,12 +153,6 @@ func (n *Node) Remove() {
 	}
 }
 
-func (n *Node) Removed() bool {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return n.removed
-}
-
 // Free implements interface internal.SlotNode.
 // It must be called if a node is no longer used.
 // We are using sync.Pool to lessen the burden of GC.

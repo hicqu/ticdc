@@ -14,7 +14,6 @@
 package internal
 
 import (
-	"container/list"
 	"sync"
 )
 
@@ -26,8 +25,6 @@ type SlotNode[T any] interface {
 	DependOn(others map[int64]T)
 	// Remove the node itself and notify all dependers.
 	Remove()
-	// Check whether the node is removed or not.
-	Removed() bool
 	// Free the node itself and remove it from the graph.
 	Free()
 }
@@ -36,14 +33,14 @@ type SlotNode[T any] interface {
 // It holds references to E, which can be used to build
 // a DAG of dependency.
 type Slots[E SlotNode[E]] struct {
-	slots    []slot
+	slots    []slot[E]
 	numSlots int64
 }
 
 // NewSlots creates a new Slots.
 func NewSlots[E SlotNode[E]](numSlots int64) *Slots[E] {
 	return &Slots[E]{
-		slots:    make([]slot, numSlots),
+		slots:    make([]slot[E], numSlots),
 		numSlots: numSlots,
 	}
 }
@@ -56,13 +53,13 @@ func (s *Slots[E]) Add(elem E, keys []int64) {
 	dependOnList := make(map[int64]E, len(keys))
 	for _, key := range keys {
 		s.slots[key].mu.Lock()
-		if s.slots[key].elems == nil {
-			s.slots[key].elems = list.New()
-		} else {
-			lastElem := s.slots[key].elems.Back().Value.(E)
-			dependOnList[lastElem.NodeID()] = lastElem
-		}
-		s.slots[key].elems.PushBack(elem)
+        if s.slots[key].tail == nil {
+            s.slots[key].tail = new(E)
+        } else {
+			prevID := (*s.slots[key].tail).NodeID()
+			dependOnList[prevID] = *s.slots[key].tail
+        }
+        *s.slots[key].tail = elem
 	}
 	elem.DependOn(dependOnList)
 	// Lock those slots one by one and then unlock them one by one, so that
@@ -76,24 +73,15 @@ func (s *Slots[E]) Add(elem E, keys []int64) {
 func (s *Slots[E]) Free(elem E, keys []int64) {
 	for _, key := range keys {
 		s.slots[key].mu.Lock()
-		if s.slots[key].elems != nil {
-			for e := s.slots[key].elems.Front(); e != nil; e = e.Next() {
-				if !e.Value.(E).Removed() {
-					break
-				}
-				// Keep removing garbage nodes until meet the target one.
-				s.slots[key].elems.Remove(e)
-			}
-			if s.slots[key].elems.Len() == 0 {
-				s.slots[key].elems = nil
-			}
-		}
+        if s.slots[key].tail != nil && (*s.slots[key].tail).NodeID() == elem.NodeID() {
+			s.slots[key].tail = nil
+        }
 		s.slots[key].mu.Unlock()
 	}
 	elem.Free()
 }
 
-type slot struct {
-	elems *list.List
-	mu    sync.Mutex
+type slot[E SlotNode[E]] struct {
+	tail *E
+	mu   sync.Mutex
 }

@@ -75,7 +75,7 @@ func (d *ConflictDetector[Worker, Txn]) Add(txn Txn) error {
 	node.OnResolved = func(workerID int64) {
 		unlock := func() {
 			node.Remove()
-			d.garbageNodes.Push(txnFinishedEvent[Txn]{txn, node})
+			d.slots.Free(node, txn.ConflictKeys(d.numSlots))
 		}
 		d.sendToWorker(txn, unlock, workerID)
 	}
