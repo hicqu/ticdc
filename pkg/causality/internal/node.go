@@ -14,6 +14,7 @@
 package internal
 
 import (
+	"math"
 	"sync"
 	stdAtomic "sync/atomic"
 
@@ -81,11 +82,12 @@ func NewNode() (ret *Node) {
 		ret.id = nextNodeID.Add(1)
 		ret.OnResolved = nil
 		ret.RandWorkerID = nil
-		ret.assignedTo = unassigned
-		ret.removed = false
 		ret.totalDependees = 0
 		ret.resolvedDependees = 0
 		ret.removedDependees = 0
+		ret.dependees = nil
+		ret.assignedTo = unassigned
+		ret.removed = false
 	}()
 
 	if obj := nodePool.Get(); obj != nil {
@@ -103,6 +105,8 @@ func (n *Node) NodeID() int64 {
 
 // DependOn implements interface internal.SlotNode.
 func (n *Node) DependOn(others map[int64]*Node) {
+	resolvedDependees, removedDependees := int32(0), int32(0)
+
 	depend := func(target *Node) {
 		if target.id == n.id {
 			panic("you cannot depend on yourself")
@@ -110,12 +114,13 @@ func (n *Node) DependOn(others map[int64]*Node) {
 		// Lock target and insert `n` into target.dependers.
 		target.mu.Lock()
 		defer target.mu.Unlock()
+
 		if target.assignedTo != unassigned {
-			resolvedDependees := stdAtomic.AddInt32(&n.resolvedDependees, 1)
+			resolvedDependees = stdAtomic.AddInt32(&n.resolvedDependees, 1)
 			stdAtomic.StoreInt64(&n.dependees[resolvedDependees-1], target.assignedTo)
 		}
 		if target.removed {
-			stdAtomic.AddInt32(&n.removedDependees, 1)
+			removedDependees = stdAtomic.AddInt32(&n.removedDependees, 1)
 		} else if _, exist := target.getOrCreateDependers().ReplaceOrInsert(n); exist {
 			panic("should never exist")
 		}
@@ -131,7 +136,7 @@ func (n *Node) DependOn(others map[int64]*Node) {
 		depend(target)
 	}
 
-	n.maybeResolve()
+	n.maybeResolve(resolvedDependees, removedDependees)
 }
 
 // Remove implements interface internal.SlotNode.
@@ -143,9 +148,7 @@ func (n *Node) Remove() {
 	if n.dependers != nil {
 		n.dependers.Ascend(func(node *Node) bool {
 			removedDependees := stdAtomic.AddInt32(&node.removedDependees, 1)
-			if removedDependees == node.totalDependees {
-				node.maybeResolve()
-			}
+			node.maybeResolve(0, removedDependees)
 			return true
 		})
 		n.dependers.Clear(true)
@@ -164,11 +167,6 @@ func (n *Node) Free() {
 	n.id = invalidNodeID
 	n.OnResolved = nil
 	n.RandWorkerID = nil
-	n.totalDependees = 0
-	n.resolvedDependees = 0
-	n.removedDependees = 0
-	n.assignedTo = unassigned
-	n.removed = false
 
 	nodePool.Put(n)
 }
@@ -192,16 +190,14 @@ func (n *Node) notifyDependers() {
 		n.dependers.Ascend(func(node *Node) bool {
 			resolvedDependees := stdAtomic.AddInt32(&node.resolvedDependees, 1)
 			stdAtomic.StoreInt64(&node.dependees[resolvedDependees-1], n.assignedTo)
-			if resolvedDependees == node.totalDependees {
-				node.maybeResolve()
-			}
+			node.maybeResolve(resolvedDependees, 0)
 			return true
 		})
 	}
 }
 
-func (n *Node) maybeResolve() {
-	if workerNum, ok := n.tryResolve(); ok {
+func (n *Node) maybeResolve(resolvedDependees, removedDependees int32) {
+	if workerNum, ok := n.tryResolve(resolvedDependees, removedDependees); ok {
 		if workerNum < 0 {
 			panic("Node.tryResolve must return a valid worker ID")
 		}
@@ -218,22 +214,38 @@ func (n *Node) maybeResolve() {
 // Returns (_, false) if there is a conflict,
 // returns (rand, true) if there is no conflict,
 // returns (N, true) if only worker N can be used.
-func (n *Node) tryResolve() (int64, bool) {
+func (n *Node) tryResolve(resolvedDependees, removedDependees int32) (int64, bool) {
 	if n.totalDependees == 0 {
 		// No conflicts, can select any workers.
 		return n.RandWorkerID(), true
 	}
 
-	resolvedDependees := stdAtomic.LoadInt32(&n.resolvedDependees)
 	if resolvedDependees == n.totalDependees {
 		// NOTE: We don't pick the last unremoved worker because lots of tasks can be
 		// attached to that worker after a time.
 		if n.totalDependees == 1 {
 			return stdAtomic.LoadInt64(&n.dependees[0]), true
-		} else if n.totalDependees == stdAtomic.LoadInt32(&n.removedDependees) {
-			return n.RandWorkerID(), true
+		}
+
+		minDep, maxDep := int64(math.MaxInt64), int64(0)
+		for i := 0; i < int(n.totalDependees); i++ {
+			curr := stdAtomic.LoadInt64(&n.dependees[i])
+			if curr < minDep {
+				minDep = curr
+			}
+			if curr > maxDep {
+				maxDep = curr
+			}
+		}
+		if minDep == maxDep {
+			return minDep, true
 		}
 	}
+
+	if removedDependees == n.totalDependees {
+		return n.RandWorkerID(), true
+	}
+
 	return unassigned, false
 }
 
