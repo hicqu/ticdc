@@ -177,24 +177,27 @@ func (n *Node) Free() {
 func (n *Node) assignTo(workerID int64) bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-
 	if n.assignedTo != unassigned {
 		// Already resolved by some other guys.
 		return false
 	}
-
 	n.assignedTo = workerID
+	return true
+}
+
+func (n *Node) notifyDependers() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	if n.dependers != nil {
 		n.dependers.Ascend(func(node *Node) bool {
 			resolvedDependees := stdAtomic.AddInt32(&node.resolvedDependees, 1)
-			stdAtomic.StoreInt64(&node.dependees[resolvedDependees-1], workerID)
+			stdAtomic.StoreInt64(&node.dependees[resolvedDependees-1], n.assignedTo)
 			if resolvedDependees == node.totalDependees {
 				node.maybeResolve()
 			}
 			return true
 		})
 	}
-	return true
 }
 
 func (n *Node) maybeResolve() {
@@ -203,12 +206,9 @@ func (n *Node) maybeResolve() {
 			panic("Node.tryResolve must return a valid worker ID")
 		}
 		if n.assignTo(workerNum) {
-			if n.OnResolved != nil {
-				n.OnResolved(workerNum)
-				n.OnResolved = nil
-			} else {
-				panic("resolve multiple times")
-			}
+			n.OnResolved(workerNum)
+			n.OnResolved = nil
+			n.notifyDependers()
 		}
 	}
 	return
@@ -229,10 +229,10 @@ func (n *Node) tryResolve() (int64, bool) {
 		// NOTE: We don't pick the last unremoved worker because lots of tasks can be
 		// attached to that worker after a time.
 		if n.totalDependees == 1 {
-            return stdAtomic.LoadInt64(&n.dependees[0]), true
-        } else if n.totalDependees == stdAtomic.LoadInt32(&n.removedDependees) {
-            return n.RandWorkerID(), true
-        }
+			return stdAtomic.LoadInt64(&n.dependees[0]), true
+		} else if n.totalDependees == stdAtomic.LoadInt32(&n.removedDependees) {
+			return n.RandWorkerID(), true
+		}
 	}
 	return unassigned, false
 }
