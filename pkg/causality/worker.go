@@ -14,12 +14,12 @@
 package causality
 
 type (
-	conflictKey = int64
+	conflictKey = string
 )
 
 type txnEvent interface {
-	// Keys are in range [0, numSlots), and must be ordered and deduped.
-	ConflictKeys(numSlots int64) []conflictKey
+	// Conflict keys should be deduped.
+	ConflictKeys() []conflictKey
 }
 
 type worker[Txn txnEvent] interface {

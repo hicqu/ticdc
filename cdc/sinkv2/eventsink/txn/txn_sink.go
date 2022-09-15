@@ -29,11 +29,6 @@ import (
 	pmysql "github.com/pingcap/tiflow/pkg/sink/mysql"
 )
 
-const (
-	// DefaultConflictDetectorSlots indicates the default slot count of conflict detector.
-	DefaultConflictDetectorSlots int64 = 1024 * 1024
-)
-
 // Assert EventSink[E event.TableEvent] implementation
 var _ eventsink.EventSink[*model.SingleTableTxn] = (*sink)(nil)
 
@@ -49,14 +44,14 @@ type sink struct {
 	closed int32
 }
 
-func newSink(ctx context.Context, backends []backend, errCh chan<- error, conflictDetectorSlots int64) *sink {
+func newSink(ctx context.Context, backends []backend, errCh chan<- error) *sink {
 	workers := make([]*worker, 0, len(backends))
 	for i, backend := range backends {
 		w := newWorker(ctx, i, backend, errCh, len(backends))
 		w.runBackgroundLoop()
 		workers = append(workers, w)
 	}
-	detector := causality.NewConflictDetector[*worker, *txnEvent](workers, conflictDetectorSlots)
+	detector := causality.NewConflictDetector[*worker, *txnEvent](workers)
 	return &sink{conflictDetector: detector, workers: workers}
 }
 
@@ -66,7 +61,6 @@ func NewMySQLSink(
 	sinkURI *url.URL,
 	replicaConfig *config.ReplicaConfig,
 	errCh chan<- error,
-	conflictDetectorSlots int64,
 ) (*sink, error) {
 	var getConn pmysql.Factory = pmysql.CreateMySQLDBConn
 
@@ -82,7 +76,7 @@ func NewMySQLSink(
 	for _, impl := range backendImpls {
 		backends = append(backends, impl)
 	}
-	sink := newSink(ctx, backends, errCh, conflictDetectorSlots)
+	sink := newSink(ctx, backends, errCh)
 	sink.statistics = statistics
 	sink.cancel = cancel
 

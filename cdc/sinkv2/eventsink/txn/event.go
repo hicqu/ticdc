@@ -15,8 +15,6 @@ package txn
 
 import (
 	"encoding/binary"
-	"hash/crc64"
-	"sort"
 	"time"
 
 	"github.com/pingcap/log"
@@ -25,12 +23,10 @@ import (
 	"go.uber.org/zap"
 )
 
-var crcTable = crc64.MakeTable(crc64.ISO)
-
 type txnEvent struct {
 	*eventsink.TxnCallbackableEvent
 	start        time.Time
-	conflictKeys []int64
+	conflictKeys []string
 }
 
 func newTxnEvent(event *eventsink.TxnCallbackableEvent) *txnEvent {
@@ -38,34 +34,30 @@ func newTxnEvent(event *eventsink.TxnCallbackableEvent) *txnEvent {
 }
 
 // ConflictKeys implements causality.txnEvent interface.
-func (e *txnEvent) ConflictKeys(numSlots int64) []int64 {
+func (e *txnEvent) ConflictKeys() []string {
 	if len(e.conflictKeys) > 0 {
 		return e.conflictKeys
 	}
-	keys := genTxnKeys(e.TxnCallbackableEvent.Event, numSlots)
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-	e.conflictKeys = keys
+
+	e.conflictKeys = genTxnKeys(e.TxnCallbackableEvent.Event)
 	return e.conflictKeys
 }
 
-// genTxnKeys returns hash keys for `txn`. All keys are in [0, numSlots).
-func genTxnKeys(txn *model.SingleTableTxn, numSlots int64) []int64 {
+func genTxnKeys(txn *model.SingleTableTxn) []string {
 	if len(txn.Rows) == 0 {
 		return nil
 	}
-	hashRes := make(map[int64]struct{}, len(txn.Rows))
+
+	// TODO: allocate correct capacoty.
+	keysSet := make(map[string]struct{}, len(txn.Rows))
 	for _, row := range txn.Rows {
-		hasher := crc64.New(crcTable)
-		for _, key := range genRowKeys(row) {
-			if _, err := hasher.Write(key); err != nil {
-				log.Panic("crc64 hasher fail")
-			}
+		rowKeys := genRowKeys(row)
+		for _, key := range rowKeys {
+			keysSet[string(key)] = struct{}{}
 		}
-		hash := hasher.Sum64() % uint64(numSlots)
-		hashRes[int64(hash)] = struct{}{}
 	}
-	keys := make([]int64, 0, len(hashRes))
-	for key := range hashRes {
+	keys := make([]string, 0, len(keysSet))
+	for key := range keysSet {
 		keys = append(keys, key)
 	}
 	return keys

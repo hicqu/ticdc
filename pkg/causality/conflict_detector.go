@@ -30,8 +30,7 @@ type ConflictDetector[Worker worker[Txn], Txn txnEvent] struct {
 
 	// slots are used to find all unfinished transactions
 	// conflicting with an incoming transactions.
-	slots    *internal.Slots[*internal.Node]
-	numSlots int64
+	slots *internal.Slots[*internal.Node]
 
 	// nextWorkerID is used to dispatch transactions round-robin.
 	nextWorkerID atomic.Int64
@@ -50,12 +49,10 @@ type txnFinishedEvent[Txn txnEvent] struct {
 // NewConflictDetector creates a new ConflictDetector.
 func NewConflictDetector[Worker worker[Txn], Txn txnEvent](
 	workers []Worker,
-	numSlots int64,
 ) *ConflictDetector[Worker, Txn] {
 	ret := &ConflictDetector[Worker, Txn]{
 		workers:      workers,
-		slots:        internal.NewSlots[*internal.Node](numSlots),
-		numSlots:     numSlots,
+		slots:        internal.NewSlots[*internal.Node](),
 		garbageNodes: containers.NewSliceQueue[txnFinishedEvent[Txn]](),
 		closeCh:      make(chan struct{}),
 	}
@@ -75,12 +72,12 @@ func (d *ConflictDetector[Worker, Txn]) Add(txn Txn) error {
 	node.OnResolved = func(workerID int64) {
 		unlock := func() {
 			node.Remove()
-			d.slots.Free(node, txn.ConflictKeys(d.numSlots))
+			d.slots.Free(node, txn.ConflictKeys())
 		}
 		d.sendToWorker(txn, unlock, workerID)
 	}
 	node.RandWorkerID = func() int64 { return d.nextWorkerID.Add(1) % int64(len(d.workers)) }
-	d.slots.Add(node, txn.ConflictKeys(d.numSlots))
+	d.slots.Add(node, txn.ConflictKeys())
 	return nil
 }
 
@@ -101,7 +98,7 @@ func (d *ConflictDetector[Worker, Txn]) runBackgroundTasks() {
 				if !ok {
 					break
 				}
-				d.slots.Free(event.node, event.txn.ConflictKeys(d.numSlots))
+				d.slots.Free(event.node, event.txn.ConflictKeys())
 			}
 		}
 	}

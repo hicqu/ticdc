@@ -19,7 +19,7 @@ import (
 
 // SlotNode describes objects that can be compared for equality.
 type SlotNode[T any] interface {
-    AllocID()
+	AllocID()
 	// NodeID tells the node's ID.
 	NodeID() int64
 	// Construct a dependency on `others`.
@@ -34,15 +34,14 @@ type SlotNode[T any] interface {
 // It holds references to E, which can be used to build
 // a DAG of dependency.
 type Slots[E SlotNode[E]] struct {
-	slots    []slot[E]
-	numSlots int64
+	slots map[string]*E
+	mu    sync.Mutex
 }
 
 // NewSlots creates a new Slots.
-func NewSlots[E SlotNode[E]](numSlots int64) *Slots[E] {
+func NewSlots[E SlotNode[E]]() *Slots[E] {
 	return &Slots[E]{
-		slots:    make([]slot[E], numSlots),
-		numSlots: numSlots,
+		slots: make(map[string]*E, 1024),
 	}
 }
 
@@ -50,40 +49,40 @@ func NewSlots[E SlotNode[E]](numSlots int64) *Slots[E] {
 // where elem is conflicting with an existing element.
 // Note that onConflict can be called multiple times with the same
 // dependee.
-func (s *Slots[E]) Add(elem E, keys []int64) {
+func (s *Slots[E]) Add(elem E, keys []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	dependOnList := make(map[int64]E, len(keys))
 	for _, key := range keys {
-		s.slots[key].mu.Lock()
-		if s.slots[key].tail == nil {
-			s.slots[key].tail = new(E)
+		dep := s.slots[key]
+		if dep == nil {
+			dep = new(E)
+			s.slots[key] = dep
 		} else {
-			prevID := (*s.slots[key].tail).NodeID()
-			dependOnList[prevID] = *s.slots[key].tail
+			prevID := (*dep).NodeID()
+			dependOnList[prevID] = *dep
 		}
-		*s.slots[key].tail = elem
+		*dep = elem
 	}
-    elem.AllocID()
+	elem.AllocID()
 	elem.DependOn(dependOnList)
-	// Lock those slots one by one and then unlock them one by one, so that
-	// we can avoid 2 transactions get executed interleaved.
-	for _, key := range keys {
-		s.slots[key].mu.Unlock()
-	}
 }
 
 // Free removes an element from the Slots.
-func (s *Slots[E]) Free(elem E, keys []int64) {
+func (s *Slots[E]) Free(elem E, keys []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	for _, key := range keys {
-		s.slots[key].mu.Lock()
-		if s.slots[key].tail != nil && (*s.slots[key].tail).NodeID() == elem.NodeID() {
-			s.slots[key].tail = nil
+		dep := s.slots[key]
+		if dep != nil && (*dep).NodeID() == elem.NodeID() {
+			delete(s.slots, key)
 		}
-		s.slots[key].mu.Unlock()
 	}
 	elem.Free()
 }
 
 type slot[E SlotNode[E]] struct {
 	tail *E
-	mu   sync.Mutex
 }
