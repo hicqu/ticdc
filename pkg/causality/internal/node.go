@@ -20,6 +20,9 @@ import (
 
 	"github.com/google/btree"
 	"go.uber.org/atomic"
+
+	"github.com/pingcap/log"
+	"go.uber.org/zap"
 )
 
 type (
@@ -54,7 +57,8 @@ type Node struct {
 	totalDependees    int32
 	resolvedDependees int32
 	removedDependees  int32
-	dependees         []int64
+	resolvedList         []int64
+    removedList []int64
 
 	// Following fields are protected by `mu`.
 	mu sync.Mutex
@@ -85,7 +89,8 @@ func NewNode() (ret *Node) {
 		ret.totalDependees = 0
 		ret.resolvedDependees = 0
 		ret.removedDependees = 0
-		ret.dependees = nil
+		ret.resolvedList = nil
+		ret.removedList = nil
 		ret.assignedTo = unassigned
 		ret.removed = false
 	}()
@@ -117,19 +122,22 @@ func (n *Node) DependOn(others map[int64]*Node) {
 
 		if target.assignedTo != unassigned {
 			resolvedDependees = stdAtomic.AddInt32(&n.resolvedDependees, 1)
-			stdAtomic.StoreInt64(&n.dependees[resolvedDependees-1], target.assignedTo)
+			stdAtomic.StoreInt64(&n.resolvedList[resolvedDependees-1], target.assignedTo)
 		}
 		if target.removed {
 			removedDependees = stdAtomic.AddInt32(&n.removedDependees, 1)
+			stdAtomic.StoreInt64(&n.removedList[removedDependees-1], target.assignedTo)
 		} else if _, exist := target.getOrCreateDependers().ReplaceOrInsert(n); exist {
 			panic("should never exist")
 		}
 	}
 
 	n.totalDependees = int32(len(others))
-	n.dependees = make([]int64, 0, n.totalDependees)
+	n.resolvedList = make([]int64, 0, n.totalDependees)
+	n.removedList = make([]int64, 0, n.totalDependees)
 	for i := 0; i < int(n.totalDependees); i++ {
-		n.dependees = append(n.dependees, unassigned)
+		n.resolvedList = append(n.resolvedList, unassigned)
+		n.removedList = append(n.removedList, unassigned)
 	}
 
 	for _, target := range others {
@@ -148,6 +156,7 @@ func (n *Node) Remove() {
 	if n.dependers != nil {
 		n.dependers.Ascend(func(node *Node) bool {
 			removedDependees := stdAtomic.AddInt32(&node.removedDependees, 1)
+            stdAtomic.StoreInt64(&node.removedList[removedDependees-1], n.assignedTo)
 			node.maybeResolve(0, removedDependees)
 			return true
 		})
@@ -180,6 +189,8 @@ func (n *Node) assignTo(workerID int64) bool {
 		return false
 	}
 	n.assignedTo = workerID
+    n.OnResolved(workerID)
+    n.OnResolved = nil
 	return true
 }
 
@@ -189,7 +200,7 @@ func (n *Node) notifyDependers() {
 	if n.dependers != nil {
 		n.dependers.Ascend(func(node *Node) bool {
 			resolvedDependees := stdAtomic.AddInt32(&node.resolvedDependees, 1)
-			stdAtomic.StoreInt64(&node.dependees[resolvedDependees-1], n.assignedTo)
+			stdAtomic.StoreInt64(&node.resolvedList[resolvedDependees-1], n.assignedTo)
 			node.maybeResolve(resolvedDependees, 0)
 			return true
 		})
@@ -202,8 +213,6 @@ func (n *Node) maybeResolve(resolvedDependees, removedDependees int32) {
 			panic("Node.tryResolve must return a valid worker ID")
 		}
 		if n.assignTo(workerNum) {
-			n.OnResolved(workerNum)
-			n.OnResolved = nil
 			n.notifyDependers()
 		}
 	}
@@ -224,12 +233,12 @@ func (n *Node) tryResolve(resolvedDependees, removedDependees int32) (int64, boo
 		// NOTE: We don't pick the last unremoved worker because lots of tasks can be
 		// attached to that worker after a time.
 		if n.totalDependees == 1 {
-			return stdAtomic.LoadInt64(&n.dependees[0]), true
+			return stdAtomic.LoadInt64(&n.resolvedList[0]), true
 		}
 
 		minDep, maxDep := int64(math.MaxInt64), int64(0)
 		for i := 0; i < int(n.totalDependees); i++ {
-			curr := stdAtomic.LoadInt64(&n.dependees[i])
+			curr := stdAtomic.LoadInt64(&n.resolvedList[i])
 			if curr < minDep {
 				minDep = curr
 			}
@@ -245,6 +254,31 @@ func (n *Node) tryResolve(resolvedDependees, removedDependees int32) (int64, boo
 	if removedDependees == n.totalDependees {
 		return n.RandWorkerID(), true
 	}
+
+    if removedDependees +1 == n.totalDependees {
+        resolvedDependees = stdAtomic.LoadInt32(&n.resolvedDependees)
+        if resolvedDependees == n.totalDependees {
+            var left int64 = 0
+            for i := 0; i < int(n.totalDependees); i++ {
+                resolved := stdAtomic.LoadInt64(&n.resolvedList[i])
+                if resolved != unassigned {
+                    left += resolved
+                }
+                removed := stdAtomic.LoadInt64(&n.removedList[i])
+                if removed != unassigned {
+                    left -= removed
+                }
+            }
+            if left < 0 {
+                panic("left should never be negtive")
+            }
+            log.Info("QP bad logic",
+                zap.Any("resolvedList", n.resolvedList),
+                zap.Any("removedList", n.removedList),
+                zap.Any("left", left))
+            return left, true
+        }
+    }
 
 	return unassigned, false
 }
