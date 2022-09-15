@@ -57,8 +57,8 @@ type Node struct {
 	totalDependees    int32
 	resolvedDependees int32
 	removedDependees  int32
-	resolvedList         []int64
-    removedList []int64
+	resolvedList      []int64
+	removedList       []int64
 
 	// Following fields are protected by `mu`.
 	mu sync.Mutex
@@ -156,7 +156,7 @@ func (n *Node) Remove() {
 	if n.dependers != nil {
 		n.dependers.Ascend(func(node *Node) bool {
 			removedDependees := stdAtomic.AddInt32(&node.removedDependees, 1)
-            stdAtomic.StoreInt64(&node.removedList[removedDependees-1], n.assignedTo)
+			stdAtomic.StoreInt64(&node.removedList[removedDependees-1], n.assignedTo)
 			node.maybeResolve(0, removedDependees)
 			return true
 		})
@@ -189,8 +189,8 @@ func (n *Node) assignTo(workerID int64) bool {
 		return false
 	}
 	n.assignedTo = workerID
-    n.OnResolved(workerID)
-    n.OnResolved = nil
+	n.OnResolved(workerID)
+	n.OnResolved = nil
 	return true
 }
 
@@ -255,30 +255,30 @@ func (n *Node) tryResolve(resolvedDependees, removedDependees int32) (int64, boo
 		return n.RandWorkerID(), true
 	}
 
-    if removedDependees +1 == n.totalDependees {
-        resolvedDependees = stdAtomic.LoadInt32(&n.resolvedDependees)
-        if resolvedDependees == n.totalDependees {
-            var left int64 = 0
-            for i := 0; i < int(n.totalDependees); i++ {
-                resolved := stdAtomic.LoadInt64(&n.resolvedList[i])
-                if resolved != unassigned {
-                    left += resolved
-                }
-                removed := stdAtomic.LoadInt64(&n.removedList[i])
-                if removed != unassigned {
-                    left -= removed
-                }
-            }
-            if left < 0 {
-                panic("left should never be negtive")
-            }
-            log.Info("QP bad logic",
-                zap.Any("resolvedList", n.resolvedList),
-                zap.Any("removedList", n.removedList),
-                zap.Any("left", left))
-            return left, true
-        }
-    }
+	if removedDependees+1 == n.totalDependees {
+		resolvedDependees = stdAtomic.LoadInt32(&n.resolvedDependees)
+		if resolvedDependees == n.totalDependees {
+			var left int64 = 0
+			for i := 0; i < int(n.totalDependees); i++ {
+				resolved := stdAtomic.LoadInt64(&n.resolvedList[i])
+				if resolved != unassigned {
+					left += resolved
+				}
+				removed := stdAtomic.LoadInt64(&n.removedList[i])
+				if removed != unassigned {
+					left -= removed
+				}
+			}
+			if left < 0 {
+				panic("left should never be negtive")
+			}
+			log.Info("QP bad logic",
+				zap.Any("resolvedList", n.resolvedList),
+				zap.Any("removedList", n.removedList),
+				zap.Any("left", left))
+			return left, true
+		}
+	}
 
 	return unassigned, false
 }
