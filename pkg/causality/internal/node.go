@@ -20,9 +20,6 @@ import (
 
 	"github.com/google/btree"
 	"go.uber.org/atomic"
-
-	"github.com/pingcap/log"
-	"go.uber.org/zap"
 )
 
 type (
@@ -83,7 +80,6 @@ type Node struct {
 // NewNode creates a new node.
 func NewNode() (ret *Node) {
 	defer func() {
-		ret.id = nextNodeID.Add(1)
 		ret.OnResolved = nil
 		ret.RandWorkerID = nil
 		ret.totalDependees = 0
@@ -101,6 +97,11 @@ func NewNode() (ret *Node) {
 		ret = new(Node)
 	}
 	return
+}
+
+// AllocID implements interface internal.SlotNode.
+func (n *Node) AllocID() {
+    n.id = nextNodeID.Add(1)
 }
 
 // NodeID implements interface internal.SlotNode.
@@ -272,10 +273,6 @@ func (n *Node) tryResolve(resolvedDependees, removedDependees int32) (int64, boo
             if left < 0 {
                 panic("left should never be negtive")
             }
-            log.Info("QP bad logic",
-                zap.Any("resolvedList", n.resolvedList),
-                zap.Any("removedList", n.removedList),
-                zap.Any("left", left))
             return left, true
         }
     }
