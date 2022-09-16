@@ -33,6 +33,8 @@ type Causality[T Txn] struct {
 	relations []*node[T]
 	notifier  chan struct{}
 	workers   []CasusalityWorker[T]
+
+	nextWorker int
 }
 
 func NewCausality[T Txn](workers []CasusalityWorker[T], slots uint64) *Causality[T] {
@@ -147,5 +149,7 @@ func (c *Causality[T]) detectConflicts(keys []uint64) (bool, int) {
 }
 
 func (c *Causality[T]) randWorker() int {
-	return 0
+	workerIdx := c.nextWorker % len(c.workers)
+	c.nextWorker += 1
+	return workerIdx
 }
