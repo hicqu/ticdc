@@ -16,13 +16,16 @@ package txn
 import (
 	"context"
 	"net/url"
+	"sync"
 	"sync/atomic"
 
 	"github.com/pingcap/errors"
+	"github.com/pingcap/log"
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink"
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink/txn/mysql"
 	"github.com/pingcap/tiflow/cdc/sinkv2/metrics"
+	"github.com/pingcap/tiflow/pkg/chann"
 	"github.com/pingcap/tiflow/pkg/config"
 	psink "github.com/pingcap/tiflow/pkg/sink"
 	pmysql "github.com/pingcap/tiflow/pkg/sink/mysql"
@@ -38,6 +41,7 @@ var _ eventsink.EventSink[*model.SingleTableTxn] = (*sink)(nil)
 
 // sink is the sink for SingleTableTxn.
 type sink struct {
+	txnCh            *chann.Chann[*txnEvent]
 	conflictDetector *Causality[*txnEvent]
 	statistics       *metrics.Statistics
 	workers          []*worker
@@ -46,6 +50,10 @@ type sink struct {
 	// set when the sink is closed explicitly. and then subsequence `WriteEvents` call
 	// should returns an error.
 	closed int32
+
+	// To manage the background thread.
+	wg      sync.WaitGroup
+	stopped chan struct{}
 }
 
 func newSink(ctx context.Context, backends []backend, errCh chan<- error, conflictDetectorSlots uint64) *sink {
@@ -58,7 +66,13 @@ func newSink(ctx context.Context, backends []backend, errCh chan<- error, confli
 		causalityWorkers = append(causalityWorkers, w)
 	}
 	detector := NewCausality[*txnEvent](causalityWorkers, conflictDetectorSlots)
-	return &sink{conflictDetector: detector, workers: workers}
+	sink := &sink{
+		txnCh:            chann.New[*txnEvent](chann.Cap(-1 /*unbounded*/)),
+		conflictDetector: detector,
+		workers:          workers,
+	}
+	sink.runBackgroundLoop()
+	return sink
 }
 
 // NewMySQLSink creates a mysql sink with given parameters.
@@ -96,7 +110,7 @@ func (s *sink) WriteEvents(rows ...*eventsink.TxnCallbackableEvent) error {
 		return errors.Trace(errors.New("closed sink"))
 	}
 	for _, row := range rows {
-		s.conflictDetector.Add(newTxnEvent(row))
+		s.txnCh.In() <- newTxnEvent(row)
 	}
 	return nil
 }
@@ -104,6 +118,10 @@ func (s *sink) WriteEvents(rows ...*eventsink.TxnCallbackableEvent) error {
 // Close closes the sink. It won't wait for all pending items backend handled.
 func (s *sink) Close() error {
 	atomic.StoreInt32(&s.closed, 1)
+
+	close(s.stopped)
+	s.wg.Wait()
+
 	for _, w := range s.workers {
 		w.Close()
 	}
@@ -115,4 +133,20 @@ func (s *sink) Close() error {
 		s.statistics.Close()
 	}
 	return nil
+}
+
+func (s *sink) runBackgroundLoop() {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		for {
+			select {
+			case e := <-s.txnCh.Out():
+				s.conflictDetector.Add(e)
+			case <-s.stopped:
+				log.Info("conflict detector consumer is closed")
+				return
+			}
+		}
+	}()
 }
