@@ -23,7 +23,6 @@ import (
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink"
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink/txn/mysql"
 	"github.com/pingcap/tiflow/cdc/sinkv2/metrics"
-	"github.com/pingcap/tiflow/pkg/causality"
 	"github.com/pingcap/tiflow/pkg/config"
 	psink "github.com/pingcap/tiflow/pkg/sink"
 	pmysql "github.com/pingcap/tiflow/pkg/sink/mysql"
@@ -31,7 +30,7 @@ import (
 
 const (
 	// DefaultConflictDetectorSlots indicates the default slot count of conflict detector.
-	DefaultConflictDetectorSlots int64 = 1024 * 1024
+	DefaultConflictDetectorSlots uint64 = 16 * 1024 * 1024
 )
 
 // Assert EventSink[E event.TableEvent] implementation
@@ -39,7 +38,7 @@ var _ eventsink.EventSink[*model.SingleTableTxn] = (*sink)(nil)
 
 // sink is the sink for SingleTableTxn.
 type sink struct {
-	conflictDetector *causality.ConflictDetector[*worker, *txnEvent]
+	conflictDetector *Causality[*txnEvent]
 	statistics       *metrics.Statistics
 	workers          []*worker
 	cancel           func()
@@ -49,14 +48,16 @@ type sink struct {
 	closed int32
 }
 
-func newSink(ctx context.Context, backends []backend, errCh chan<- error, conflictDetectorSlots int64) *sink {
+func newSink(ctx context.Context, backends []backend, errCh chan<- error, conflictDetectorSlots uint64) *sink {
 	workers := make([]*worker, 0, len(backends))
+	causalityWorkers := make([]CasusalityWorker[*txnEvent], 0, len(backends))
 	for i, backend := range backends {
 		w := newWorker(ctx, i, backend, errCh, len(backends))
 		w.runBackgroundLoop()
 		workers = append(workers, w)
+		causalityWorkers = append(causalityWorkers, w)
 	}
-	detector := causality.NewConflictDetector[*worker, *txnEvent](workers, conflictDetectorSlots)
+	detector := NewCausality[*txnEvent](causalityWorkers, conflictDetectorSlots)
 	return &sink{conflictDetector: detector, workers: workers}
 }
 
@@ -66,7 +67,7 @@ func NewMySQLSink(
 	sinkURI *url.URL,
 	replicaConfig *config.ReplicaConfig,
 	errCh chan<- error,
-	conflictDetectorSlots int64,
+	conflictDetectorSlots uint64,
 ) (*sink, error) {
 	var getConn pmysql.Factory = pmysql.CreateMySQLDBConn
 
@@ -95,10 +96,7 @@ func (s *sink) WriteEvents(rows ...*eventsink.TxnCallbackableEvent) error {
 		return errors.Trace(errors.New("closed sink"))
 	}
 	for _, row := range rows {
-		err := s.conflictDetector.Add(newTxnEvent(row))
-		if err != nil {
-			return err
-		}
+		s.conflictDetector.Add(newTxnEvent(row))
 	}
 	return nil
 }
@@ -106,7 +104,6 @@ func (s *sink) WriteEvents(rows ...*eventsink.TxnCallbackableEvent) error {
 // Close closes the sink. It won't wait for all pending items backend handled.
 func (s *sink) Close() error {
 	atomic.StoreInt32(&s.closed, 1)
-	s.conflictDetector.Close()
 	for _, w := range s.workers {
 		w.Close()
 	}

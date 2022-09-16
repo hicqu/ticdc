@@ -29,7 +29,7 @@ var crcTable = crc64.MakeTable(crc64.ISO)
 type txnEvent struct {
 	*eventsink.TxnCallbackableEvent
 	start        time.Time
-	conflictKeys []int64
+	conflictKeys []uint64
 }
 
 func newTxnEvent(event *eventsink.TxnCallbackableEvent) *txnEvent {
@@ -37,19 +37,19 @@ func newTxnEvent(event *eventsink.TxnCallbackableEvent) *txnEvent {
 }
 
 // ConflictKeys implements causality.txnEvent interface.
-func (e *txnEvent) ConflictKeys() []int64 {
+func (e *txnEvent) ConflictKeys(slots uint64) []uint64 {
 	if len(e.conflictKeys) > 0 {
 		return e.conflictKeys
 	}
 
 	keys := genTxnKeys(e.TxnCallbackableEvent.Event)
-	e.conflictKeys = make([]int64, 0, len(keys))
+	e.conflictKeys = make([]uint64, 0, len(keys))
 	for _, key := range keys {
 		hasher := crc64.New(crcTable)
 		if _, err := hasher.Write(key); err != nil {
 			log.Panic("crc64 hasher fail")
 		}
-		e.conflictKeys = append(e.conflictKeys, int64(hasher.Sum64()))
+		e.conflictKeys = append(e.conflictKeys, hasher.Sum64()%slots)
 	}
 	return e.conflictKeys
 }
