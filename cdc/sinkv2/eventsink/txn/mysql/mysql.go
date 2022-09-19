@@ -114,7 +114,12 @@ func NewMySQLBackends(
 func (s *mysqlBackend) OnTxnEvent(event *eventsink.TxnCallbackableEvent) (needFlush bool) {
 	s.events = append(s.events, event)
 	s.rows += len(event.Event.Rows)
-	return event.Event.ToWaitFlush() || s.rows >= s.cfg.MaxTxnRow
+    needFlush = event.Event.ToWaitFlush() || s.rows >= s.cfg.MaxTxnRow
+    log.Info("QP-- mysqlBackend.OnTxnEvent is called",
+        zap.Bool("needFlush", needFlush),
+        zap.Int("maxTxnRow", s.cfg.MaxTxnRow),
+        zap.Int("workerID", s.workerID))
+	return 
 }
 
 // Flush implements interface backend.
