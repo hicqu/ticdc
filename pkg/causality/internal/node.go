@@ -29,6 +29,8 @@ type (
 const (
 	unassigned    = workerID(-2)
 	invalidNodeID = int64(-1)
+
+	maxRecursionNotifyDepth int = 16
 )
 
 var (
@@ -144,24 +146,29 @@ func (n *Node) DependOn(others map[int64]*Node) {
 		depend(target)
 	}
 
-	n.maybeResolve(resolvedDependees, removedDependees)
+	n.maybeResolve(resolvedDependees, removedDependees, 1)
 }
 
 // Remove implements interface internal.SlotNode.
 func (n *Node) Remove() {
 	n.mu.Lock()
-	defer n.mu.Unlock()
-
 	n.removed = true
-	if n.dependers != nil {
-		n.dependers.Ascend(func(node *Node) bool {
-			removedDependees := stdatomic.AddInt32(&node.removedDependees, 1)
-			node.maybeResolve(0, removedDependees)
-			return true
-		})
-		n.dependers.Clear(true)
-		n.dependers = nil
+
+	if n.dependers == nil || n.dependers.Len() == 0 {
+		n.mu.Unlock()
+		return
 	}
+
+	dependers := n.dependers
+	n.dependers = nil
+	n.mu.Unlock()
+
+	dependers.Ascend(func(node *Node) bool {
+		removedDependees := stdatomic.AddInt32(&node.removedDependees, 1)
+		node.maybeResolve(0, removedDependees, 1)
+		return true
+	})
+	dependers.Clear(true)
 }
 
 // Free implements interface internal.SlotNode.
@@ -180,11 +187,11 @@ func (n *Node) Free() {
 }
 
 // assignTo assigns a node to a worker. Returns `true` on success.
-func (n *Node) assignTo(workerID int64) bool {
+func (n *Node) assignTo(workerID int64, recursionDepth int) bool {
 	n.mu.Lock()
-	defer n.mu.Unlock()
 	if n.assignedTo != unassigned {
 		// Already resolved by some other guys.
+		n.mu.Unlock()
 		return false
 	}
 
@@ -194,23 +201,36 @@ func (n *Node) assignTo(workerID int64) bool {
 		n.OnResolved = nil
 	}
 
-	if n.dependers != nil {
-		n.dependers.Ascend(func(node *Node) bool {
-			resolvedDependees := stdatomic.AddInt32(&node.resolvedDependees, 1)
-			stdatomic.StoreInt64(&node.resolvedList[resolvedDependees-1], n.assignedTo)
-			node.maybeResolve(resolvedDependees, 0)
-			return true
-		})
+	if n.dependers == nil || n.dependers.Len() == 0 {
+		n.mu.Unlock()
+		return true
 	}
+
+	dependers := make([]*Node, 0, n.dependers.Len())
+	n.dependers.Ascend(func(node *Node) bool {
+		dependers = append(dependers, node)
+		return true
+	})
+	n.mu.Unlock()
+
+	for _, node := range dependers {
+		resolvedDependees := stdatomic.AddInt32(&node.resolvedDependees, 1)
+		stdatomic.StoreInt64(&node.resolvedList[resolvedDependees-1], n.assignedTo)
+		node.maybeResolve(resolvedDependees, 0, recursionDepth+1)
+	}
+
 	return true
 }
 
-func (n *Node) maybeResolve(resolvedDependees, removedDependees int32) {
+func (n *Node) maybeResolve(resolvedDependees, removedDependees int32, recursionDepth int) {
+	if recursionDepth >= maxRecursionNotifyDepth {
+		return
+	}
 	if workerNum, ok := n.tryResolve(resolvedDependees, removedDependees); ok {
 		if workerNum < 0 {
 			panic("Node.tryResolve must return a valid worker ID")
 		}
-		n.assignTo(workerNum)
+		n.assignTo(workerNum, recursionDepth)
 	}
 	return
 }
