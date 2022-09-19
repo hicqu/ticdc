@@ -15,7 +15,7 @@ package txn
 
 import (
 	"encoding/binary"
-	"hash/crc64"
+	"hash/fnv"
 	"time"
 
 	"github.com/pingcap/log"
@@ -23,8 +23,6 @@ import (
 	"github.com/pingcap/tiflow/cdc/sinkv2/eventsink"
 	"go.uber.org/zap"
 )
-
-var crcTable = crc64.MakeTable(crc64.ISO)
 
 type txnEvent struct {
 	*eventsink.TxnCallbackableEvent
@@ -44,12 +42,13 @@ func (e *txnEvent) ConflictKeys() []int64 {
 
 	keys := genTxnKeys(e.TxnCallbackableEvent.Event)
 	e.conflictKeys = make([]int64, 0, len(keys))
+	hasher := fnv.New32a()
 	for _, key := range keys {
-		hasher := crc64.New(crcTable)
-		if _, err := hasher.Write(key); err != nil {
-			log.Panic("crc64 hasher fail")
+		if n, err := hasher.Write(key); n != len(key) || err != nil {
+			log.Panic("transaction key hash fail")
 		}
-		e.conflictKeys = append(e.conflictKeys, int64(hasher.Sum64()))
+		e.conflictKeys = append(e.conflictKeys, int64(hasher.Sum32()))
+		hasher.Reset()
 	}
 	return e.conflictKeys
 }
