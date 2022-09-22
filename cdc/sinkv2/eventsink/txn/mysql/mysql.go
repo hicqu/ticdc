@@ -50,8 +50,8 @@ type mysqlBackend struct {
 	cfg         *pmysql.Config
 	dmlMaxRetry uint64
 
-	events []*eventsink.TxnCallbackableEvent
-	rows   int
+    cache preparingDMLs
+    rows int
 
 	statistics                    *metrics.Statistics
 	metricTxnSinkDMLBatchCommit   prometheus.Observer
@@ -95,6 +95,7 @@ func NewMySQLBackends(
 			db:          db,
 			cfg:         cfg,
 			dmlMaxRetry: defaultDMLMaxRetry,
+            cache: preparingDMLs{ cfg: cfg },
 			statistics:  statistics,
 
 			metricTxnSinkDMLBatchCommit:   metrics.TxnSinkDMLBatchCommit.WithLabelValues(changefeedID.Namespace, changefeedID.ID),
@@ -112,32 +113,48 @@ func NewMySQLBackends(
 
 // OnTxnEvent implements interface backend.
 func (s *mysqlBackend) OnTxnEvent(event *eventsink.TxnCallbackableEvent) (needFlush bool) {
-	s.events = append(s.events, event)
-	s.rows += len(event.Event.Rows)
-	return event.Event.ToWaitFlush() || s.rows >= s.cfg.MaxTxnRow
+    s.statistics.ObserveRows(event.Event.Rows...)
+    s.cache.step(event)
+
+
+
+
+	// return event.Event.ToWaitFlush() || s.rows >= s.cfg.MaxTxnRow
+    return true
 }
 
 // Flush implements interface backend.
 func (s *mysqlBackend) Flush(ctx context.Context) (err error) {
-	if s.rows == 0 {
-		return
-	}
 
-	failpoint.Inject("MySQLSinkExecDMLError", func() {
-		// Add a delay to ensure the sink worker with `MySQLSinkHangLongTime`
-		// failpoint injected is executed first.
-		time.Sleep(time.Second * 2)
-		failpoint.Return(errors.Trace(dmysql.ErrInvalidConn))
-	})
+    if !s.inFlushing {
+        s.inFlushing = true
 
-	for _, event := range s.events {
-		s.statistics.ObserveRows(event.Event.Rows...)
-	}
+        failpoint.Inject("MySQLSinkExecDMLError", func() {
+            // Add a delay to ensure the sink worker with `MySQLSinkHangLongTime`
+            // failpoint injected is executed first.
+            time.Sleep(time.Second * 2)
+            failpoint.Return(errors.Trace(dmysql.ErrInvalidConn))
+        })
 
-	dmls := s.prepareDMLs()
-	log.Debug("prepare DMLs", zap.Any("rows", s.rows),
-		zap.Strings("sqls", dmls.sqls), zap.Any("values", dmls.values))
+        failpoint.Inject("MySQLSinkExecDMLError", func() {
+            // Add a delay to ensure the sink worker with `MySQLSinkHangLongTime`
+            // failpoint injected is executed first.
+            time.Sleep(time.Second * 2)
+            failpoint.Return(errors.Trace(dmysql.ErrInvalidConn))
+        })
 
+    }
+
+	// if s.rows == 0 {
+	// 	return
+	// }
+
+
+
+	// log.Debug("prepare DMLs", zap.Any("rows", s.rows),
+	// 	zap.Strings("sqls", dmls.sqls), zap.Any("values", dmls.values))
+
+    var dmls *preparedDMLs = nil
 	start := time.Now()
 	if err := s.execDMLWithMaxRetries(ctx, dmls); err != nil {
 		if errors.Cause(err) != context.Canceled {
@@ -153,14 +170,14 @@ func (s *mysqlBackend) Flush(ctx context.Context) (err error) {
 	s.metricTxnSinkDMLBatchCallback.Observe(time.Since(startCallback).Seconds())
 
 	// Be friently to GC.
-	for i := 0; i < len(s.events); i++ {
-		s.events[i] = nil
-	}
-	if cap(s.events) > 1024 {
-		s.events = make([]*eventsink.TxnCallbackableEvent, 0)
-	}
-	s.events = s.events[:0]
-	s.rows = 0
+	// for i := 0; i < len(s.events); i++ {
+	// 	s.events[i] = nil
+	// }
+	// if cap(s.events) > 1024 {
+	// 	s.events = make([]*eventsink.TxnCallbackableEvent, 0)
+	// }
+	// s.events = s.events[:0]
+	// s.rows = 0
 	return
 }
 
@@ -181,125 +198,112 @@ type preparedDMLs struct {
 	rowCount  int
 }
 
-// prepareDMLs converts model.RowChangedEvent list to query string list and args list
-func (s *mysqlBackend) prepareDMLs() *preparedDMLs {
-	// TODO: use a sync.Pool to reduce allocations.
-	startTs := make([]uint64, 0, s.rows)
-	sqls := make([]string, 0, s.rows)
-	values := make([][]interface{}, 0, s.rows)
-	callbacks := make([]eventsink.CallbackFunc, 0, len(s.events))
-	replaces := make(map[string][][]interface{})
+type preparingDMLs struct {
+    cfg *pmysql.Config
 
-	// flush cached batch replace or insert, to keep the sequence of DMLs
-	flushCacheDMLs := func() {
-		if s.cfg.BatchReplaceEnabled && len(replaces) > 0 {
-			replaceSqls, replaceValues := reduceReplace(replaces, s.cfg.BatchReplaceSize)
-			sqls = append(sqls, replaceSqls...)
-			values = append(values, replaceValues...)
-			replaces = make(map[string][][]interface{})
-		}
-	}
+    startTs []uint64 // only for logs and tests. 
+    sqls []string // generated SQLs.
+    values [][]interface{} // parameters for prepared SQLs.
+    replaces map[string][][]interface{} // for reducing replace statements.
 
+    callbacks []eventsink.CallbackFunc
+}
+
+// flush cached batch replace or insert, to keep the sequence of DMLs.
+func (p *preparingDMLs) flushCacheDMLs() {
+    if p.cfg.BatchReplaceEnabled && len(p.replaces) > 0 {
+        replaceSqls, replaceValues := reduceReplace(p.replaces, p.cfg.BatchReplaceSize)
+        p.sqls = append(p.sqls, replaceSqls...)
+        p.values = append(p.values, replaceValues...)
+        p.replaces = make(map[string][][]interface{})
+    }
+}
+
+func (p *preparingDMLs) step(event *eventsink.TxnCallbackableEvent) {
 	// translateToInsert control the update and insert behavior
-	translateToInsert := s.cfg.EnableOldValue && !s.cfg.SafeMode
-	for _, event := range s.events {
-		for _, row := range event.Event.Rows {
-			if !translateToInsert {
-				break
-			}
-			// It can be translated in to INSERT, if the row is committed after
-			// we starting replicating the table, which means it must not be
-			// replicated before, and there is no such row in downstream MySQL.
-			translateToInsert = row.CommitTs > row.ReplicatingTs
-		}
-	}
+	translateToInsert := p.cfg.EnableOldValue && !p.cfg.SafeMode
+    for _, row := range event.Event.Rows {
+        if !translateToInsert {
+            break
+        }
+        // It can be translated in to INSERT, if the row is committed after
+        // we starting replicating the table, which means it must not be
+        // replicated before, and there is no such row in downstream MySQL.
+        translateToInsert = row.CommitTs > row.ReplicatingTs
+    }
+
+    if event.Callback != nil {
+        p.callbacks = append(p.callbacks, event.Callback)
+    }
 
 	rowCount := 0
-	for _, event := range s.events {
-		if event.Callback != nil {
-			callbacks = append(callbacks, event.Callback)
-		}
+    for _, row := range event.Event.Rows {
+        if len(p.startTs) == 0 || p.startTs[len(p.startTs)-1] != row.StartTs {
+            p.startTs = append(p.startTs, row.StartTs)
+        }
 
-		for _, row := range event.Event.Rows {
-			if len(startTs) == 0 || startTs[len(startTs)-1] != row.StartTs {
-				startTs = append(startTs, row.StartTs)
-			}
+        var query string
+        var args []interface{}
+        quoteTable := quotes.QuoteSchema(row.Table.Schema, row.Table.Table)
 
-			var query string
-			var args []interface{}
-			quoteTable := quotes.QuoteSchema(row.Table.Schema, row.Table.Table)
+        // If the old value is enabled, is not in safe mode and is an update event, then translate to UPDATE.
+        // NOTICE: Only update events with the old value feature enabled will have both columns and preColumns.
+        if translateToInsert && len(row.PreColumns) != 0 && len(row.Columns) != 0 {
+            p.flushCacheDMLs()
+            query, args = prepareUpdate(quoteTable, row.PreColumns, row.Columns, p.cfg.ForceReplicate)
+            if query != "" {
+                p.sqls = append(p.sqls, query)
+                p.values = append(p.values, args)
+                rowCount++
+            }
+            continue
+        }
 
-			// If the old value is enabled, is not in safe mode and is an update event, then translate to UPDATE.
-			// NOTICE: Only update events with the old value feature enabled will have both columns and preColumns.
-			if translateToInsert && len(row.PreColumns) != 0 && len(row.Columns) != 0 {
-				flushCacheDMLs()
-				query, args = prepareUpdate(quoteTable, row.PreColumns, row.Columns, s.cfg.ForceReplicate)
-				if query != "" {
-					sqls = append(sqls, query)
-					values = append(values, args)
-					rowCount++
-				}
-				continue
-			}
+        // Case for update event or delete event.
+        // For update event:
+        // If old value is disabled or in safe mode, update will be translated to DELETE + REPLACE SQL.
+        // So we will prepare a DELETE SQL here.
+        // For delete event:
+        // It will be translated directly into a DELETE SQL.
+        if len(row.PreColumns) != 0 {
+            p.flushCacheDMLs()
+            query, args = prepareDelete(quoteTable, row.PreColumns, p.cfg.ForceReplicate)
+            if query != "" {
+                p.sqls = append(p.sqls, query)
+                p.values = append(p.values, args)
+                rowCount++
+            }
+        }
 
-			// Case for update event or delete event.
-			// For update event:
-			// If old value is disabled or in safe mode, update will be translated to DELETE + REPLACE SQL.
-			// So we will prepare a DELETE SQL here.
-			// For delete event:
-			// It will be translated directly into a DELETE SQL.
-			if len(row.PreColumns) != 0 {
-				flushCacheDMLs()
-				query, args = prepareDelete(quoteTable, row.PreColumns, s.cfg.ForceReplicate)
-				if query != "" {
-					sqls = append(sqls, query)
-					values = append(values, args)
-					rowCount++
-				}
-			}
-
-			// Case for update event or insert event.
-			// For update event:
-			// If old value is disabled or in safe mode, update will be translated to DELETE + REPLACE SQL.
-			// So we will prepare a REPLACE SQL here.
-			// For insert event:
-			// It will be translated directly into a
-			// INSERT(old value is enabled and not in safe mode)
-			// or REPLACE(old value is disabled or in safe mode) SQL.
-			if len(row.Columns) != 0 {
-				if s.cfg.BatchReplaceEnabled {
-					query, args = prepareReplace(quoteTable, row.Columns, false /* appendPlaceHolder */, translateToInsert)
-					if query != "" {
-						if _, ok := replaces[query]; !ok {
-							replaces[query] = make([][]interface{}, 0)
-						}
-						replaces[query] = append(replaces[query], args)
-						rowCount++
-					}
-				} else {
-					query, args = prepareReplace(quoteTable, row.Columns, true /* appendPlaceHolder */, translateToInsert)
-					if query != "" {
-						sqls = append(sqls, query)
-						values = append(values, args)
-						rowCount++
-					}
-				}
-			}
-		}
-	}
-	flushCacheDMLs()
-
-	if len(callbacks) == 0 {
-		callbacks = nil
-	}
-
-	return &preparedDMLs{
-		startTs:   startTs,
-		sqls:      sqls,
-		values:    values,
-		callbacks: callbacks,
-		rowCount:  rowCount,
-	}
+        // Case for update event or insert event.
+        // For update event:
+        // If old value is disabled or in safe mode, update will be translated to DELETE + REPLACE SQL.
+        // So we will prepare a REPLACE SQL here.
+        // For insert event:
+        // It will be translated directly into a
+        // INSERT(old value is enabled and not in safe mode)
+        // or REPLACE(old value is disabled or in safe mode) SQL.
+        if len(row.Columns) != 0 {
+            if p.cfg.BatchReplaceEnabled {
+                query, args = prepareReplace(quoteTable, row.Columns, false /* appendPlaceHolder */, translateToInsert)
+                if query != "" {
+                    if _, ok := p.replaces[query]; !ok {
+                        p.replaces[query] = make([][]interface{}, 0)
+                    }
+                    p.replaces[query] = append(p.replaces[query], args)
+                    rowCount++
+                }
+            } else {
+                query, args = prepareReplace(quoteTable, row.Columns, true /* appendPlaceHolder */, translateToInsert)
+                if query != "" {
+                    p.sqls = append(p.sqls, query)
+                    p.values = append(p.values, args)
+                    rowCount++
+                }
+            }
+        }
+    }
+	p.flushCacheDMLs()
 }
 
 func (s *mysqlBackend) execDMLWithMaxRetries(ctx context.Context, dmls *preparedDMLs) error {
