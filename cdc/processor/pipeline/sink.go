@@ -86,6 +86,11 @@ func newSinkNode(
 		splitTxn:       splitTxn,
 		logLimiter:     rate.NewLimiter(rate.Every(logInterval), logBurst),
 	}
+	if sinkV2 != nil {
+		sinkV2.UpdateCheckpointTsPeriodically(func(ckpt model.ResolvedTs) {
+			flowController.Release(ckpt)
+		})
+	}
 	sn.resolvedTs.Store(model.NewResolvedTs(startTs))
 	sn.checkpointTs.Store(model.NewResolvedTs(startTs))
 	return sn
@@ -177,18 +182,18 @@ func (n *sinkNode) flushSink(ctx context.Context, resolved model.ResolvedTs) (er
 		if err != nil {
 			return errors.Trace(err)
 		}
+		// we must call flowController.Release immediately after we call
+		// FlushRowChangedEvents to prevent deadlock cause by checkpointTs
+		// fall back
+		n.flowController.Release(checkpoint)
 	} else {
 		err = n.sinkV2.UpdateResolvedTs(resolved)
 		if err != nil {
 			return errors.Trace(err)
 		}
+		// For sinkV2 it's unnecessary to release flow control manually.
 		checkpoint = n.sinkV2.GetCheckpointTs()
 	}
-
-	// we must call flowController.Release immediately after we call
-	// FlushRowChangedEvents to prevent deadlock cause by checkpointTs
-	// fall back
-	n.flowController.Release(checkpoint)
 
 	// checkpointTs may fall back if this table is newly added to current processor.
 	if currentCheckpointTs.EqualOrGreater(checkpoint) {

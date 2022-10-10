@@ -37,4 +37,6 @@ type TableSink interface {
 	// Close closes the table sink.
 	// We should make sure this method is cancellable.
 	Close(ctx context.Context) error
+	// Start a background goroutine to update checkpoint periodically.
+	UpdateCheckpointTsPeriodically(onCkptUpdated func(ckpt model.ResolvedTs))
 }

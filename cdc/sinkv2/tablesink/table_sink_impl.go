@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/pingcap/log"
@@ -46,6 +47,10 @@ type EventTableSink[E eventsink.TableEvent] struct {
 
 	// For dataflow metrics.
 	metricsTableSinkTotalRows prometheus.Counter
+
+	// To manage the background goroutine started by `UpdateCheckpointTsPeriodically`.
+	wg     sync.WaitGroup
+	closed chan struct{}
 }
 
 // New an eventTableSink with given backendSink and event appender.
@@ -119,6 +124,9 @@ func (e *EventTableSink[E]) GetCheckpointTs() model.ResolvedTs {
 // Close the table sink and wait for all callbacks be called.
 // Notice: It will be blocked until all callbacks be called.
 func (e *EventTableSink[E]) Close(ctx context.Context) error {
+	close(e.closed)
+	e.wg.Wait()
+
 	currentState := e.state.Load()
 	if currentState == state.TableSinkStopping ||
 		currentState == state.TableSinkStopped {
@@ -163,4 +171,26 @@ func (e *EventTableSink[E]) Close(ctx context.Context) error {
 		zap.Uint64("checkpointTs", stoppedCheckpointTs.Ts),
 		zap.Duration("duration", time.Since(start)))
 	return nil
+}
+
+// Start a background goroutine to update checkpoint periodically.
+func (e *EventTableSink[E]) UpdateCheckpointTsPeriodically(onCkptUpdated func(ckpt model.ResolvedTs)) {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	var prevCkpt, currCkpt model.ResolvedTs
+
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		select {
+		case <-e.closed:
+			ticker.Stop()
+			break
+		case <-ticker.C:
+			currCkpt = e.progressTracker.advance()
+			if currCkpt.Ts != prevCkpt.Ts {
+				onCkptUpdated(currCkpt)
+				prevCkpt = currCkpt
+			}
+		}
+	}()
 }
