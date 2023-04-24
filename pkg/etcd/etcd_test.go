@@ -426,10 +426,10 @@ func TestDeleteCaptureInfo(t *testing.T) {
 		val, err := status.Marshal()
 		require.NoError(t, err)
 		statusKey := fmt.Sprintf("%s/%s", ChangefeedStatusKeyPrefix(DefaultCDCClusterID, id.Namespace), id.ID)
-		_, err = s.client.Client.Put(ctx, statusKey, val)
+		_, err = s.client.GetEtcdClient().Put(ctx, statusKey, val)
 		require.NoError(t, err)
 
-		_, err = s.client.Client.Put(
+		_, err = s.client.GetEtcdClient().Put(
 			ctx, GetEtcdKeyTaskPosition(DefaultCDCClusterID, id, captureID),
 			fmt.Sprintf("task-%s", id.ID))
 		require.NoError(t, err)
@@ -438,7 +438,7 @@ func TestDeleteCaptureInfo(t *testing.T) {
 	require.NoError(t, err)
 	for id := range changefeedStatus {
 		taskPositionKey := GetEtcdKeyTaskPosition(DefaultCDCClusterID, id, captureID)
-		v, err := s.client.Client.Get(ctx, taskPositionKey)
+		v, err := s.client.GetEtcdClient().Get(ctx, taskPositionKey)
 		require.NoError(t, err)
 		require.Equal(t, 0, len(v.Kvs))
 	}

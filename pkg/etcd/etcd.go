@@ -183,7 +183,7 @@ type CDCEtcdClientImpl struct {
 	wg     sync.WaitGroup
 
 	mu     sync.RWMutex
-	Client *Client
+	client *Client
 }
 
 var _ CDCEtcdClient = (*CDCEtcdClientImpl)(nil)
@@ -201,7 +201,7 @@ func NewCDCEtcdClient(ctx context.Context,
 		etcdClusterID: resp.Header.ClusterId,
 		ClusterID:     clusterID,
 		closed:        make(chan struct{}),
-		Client:        Wrap(cli, metrics),
+		client:        Wrap(cli, metrics),
 	}, nil
 }
 
@@ -260,7 +260,7 @@ func ConnectToPD(
 	}
 
 	etcdClient.wg.Add(1)
-	etcdClusterID := make(chan uint64, 1)
+	etcdClusterIDCh := make(chan uint64, 1)
 	timer := time.NewTicker(time.Second)
 	go func() {
 		defer etcdClient.wg.Done()
@@ -286,13 +286,13 @@ func ConnectToPD(
 				}
 				log.Info("connect to etcd leader successes", zap.String("leader", leader))
 				etcdClient.mu.Lock()
-				etcdClient.Client = Wrap(cli, metrics)
+				etcdClient.client = Wrap(cli, metrics)
 				etcdClient.mu.Unlock()
 				oldLeader = leader
 
 				if emitEtcdClusterID {
 					if resp, err := cli.MemberList(ctx); err == nil {
-						etcdClusterID <- resp.Header.ClusterId
+						etcdClusterIDCh <- resp.Header.ClusterId
 						emitEtcdClusterID = false
 					}
 				}
@@ -303,8 +303,9 @@ func ConnectToPD(
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-etcdClusterID:
-		etcdClient.etcdClusterID = <-etcdClusterID
+	case ID := <-etcdClusterIDCh:
+		etcdClient.etcdClusterID = ID
+		log.Info("get etcd cluster ID", zap.Uint64("etcdClusterID", ID))
 		return etcdClient, nil
 	}
 }
@@ -313,12 +314,12 @@ func ConnectToPD(
 func (c *CDCEtcdClientImpl) Close() error {
 	close(c.closed)
 	c.wg.Wait()
-	return c.Client.Unwrap().Close()
+	return c.GetEtcdClient().Unwrap().Close()
 }
 
 // ClearAllCDCInfo delete all keys created by CDC
 func (c *CDCEtcdClientImpl) ClearAllCDCInfo(ctx context.Context) error {
-	_, err := c.Client.Delete(ctx, BaseKey(c.ClusterID), clientv3.WithPrefix())
+	_, err := c.GetEtcdClient().Delete(ctx, BaseKey(c.ClusterID), clientv3.WithPrefix())
 	return cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
 }
 
@@ -329,12 +330,14 @@ func (c *CDCEtcdClientImpl) GetClusterID() string {
 
 // GetEtcdClient gets Client.
 func (c *CDCEtcdClientImpl) GetEtcdClient() *Client {
-	return c.Client
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.client
 }
 
 // GetAllCDCInfo get all keys created by CDC
 func (c *CDCEtcdClientImpl) GetAllCDCInfo(ctx context.Context) ([]*mvccpb.KeyValue, error) {
-	resp, err := c.Client.Get(ctx, BaseKey(c.ClusterID), clientv3.WithPrefix())
+	resp, err := c.GetEtcdClient().Get(ctx, BaseKey(c.ClusterID), clientv3.WithPrefix())
 	if err != nil {
 		return nil, cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
 	}
@@ -344,7 +347,7 @@ func (c *CDCEtcdClientImpl) GetAllCDCInfo(ctx context.Context) ([]*mvccpb.KeyVal
 // CheckMultipleCDCClusterExist checks if other cdc clusters exists,
 // and returns an error is so, and user should use --server instead
 func (c *CDCEtcdClientImpl) CheckMultipleCDCClusterExist(ctx context.Context) error {
-	resp, err := c.Client.Get(ctx, BaseKey(""),
+	resp, err := c.GetEtcdClient().Get(ctx, BaseKey(""),
 		clientv3.WithPrefix(),
 		clientv3.WithKeysOnly())
 	if err != nil {
@@ -380,7 +383,7 @@ func (c *CDCEtcdClientImpl) GetChangeFeeds(ctx context.Context) (
 	// todo: support namespace
 	key := GetEtcdKeyChangeFeedList(c.ClusterID, model.DefaultNamespace)
 
-	resp, err := c.Client.Get(ctx, key, clientv3.WithPrefix())
+	resp, err := c.GetEtcdClient().Get(ctx, key, clientv3.WithPrefix())
 	if err != nil {
 		return 0, nil, cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
 	}
@@ -421,7 +424,7 @@ func (c *CDCEtcdClientImpl) GetChangeFeedInfo(ctx context.Context,
 	id model.ChangeFeedID,
 ) (*model.ChangeFeedInfo, error) {
 	key := GetEtcdKeyChangeFeedInfo(c.ClusterID, id)
-	resp, err := c.Client.Get(ctx, key)
+	resp, err := c.GetEtcdClient().Get(ctx, key)
 	if err != nil {
 		return nil, cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
 	}
@@ -438,7 +441,7 @@ func (c *CDCEtcdClientImpl) DeleteChangeFeedInfo(ctx context.Context,
 	id model.ChangeFeedID,
 ) error {
 	key := GetEtcdKeyChangeFeedInfo(c.ClusterID, id)
-	_, err := c.Client.Delete(ctx, key)
+	_, err := c.GetEtcdClient().Delete(ctx, key)
 	return cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
 }
 
@@ -447,7 +450,7 @@ func (c *CDCEtcdClientImpl) GetChangeFeedStatus(ctx context.Context,
 	id model.ChangeFeedID,
 ) (*model.ChangeFeedStatus, int64, error) {
 	key := GetEtcdKeyJob(c.ClusterID, id)
-	resp, err := c.Client.Get(ctx, key)
+	resp, err := c.GetEtcdClient().Get(ctx, key)
 	if err != nil {
 		return nil, 0, cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
 	}
@@ -463,7 +466,7 @@ func (c *CDCEtcdClientImpl) GetChangeFeedStatus(ctx context.Context,
 func (c *CDCEtcdClientImpl) GetCaptures(ctx context.Context) (int64, []*model.CaptureInfo, error) {
 	key := CaptureInfoKeyPrefix(c.ClusterID)
 
-	resp, err := c.Client.Get(ctx, key, clientv3.WithPrefix())
+	resp, err := c.GetEtcdClient().Get(ctx, key, clientv3.WithPrefix())
 	if err != nil {
 		return 0, nil, cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
 	}
@@ -487,7 +490,7 @@ func (c *CDCEtcdClientImpl) GetCaptureInfo(
 ) (info *model.CaptureInfo, err error) {
 	key := GetEtcdKeyCaptureInfo(c.ClusterID, id)
 
-	resp, err := c.Client.Get(ctx, key)
+	resp, err := c.GetEtcdClient().Get(ctx, key)
 	if err != nil {
 		return nil, cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
 	}
@@ -509,7 +512,7 @@ func (c *CDCEtcdClientImpl) GetCaptureInfo(
 func (c *CDCEtcdClientImpl) GetCaptureLeases(ctx context.Context) (map[string]int64, error) {
 	key := CaptureInfoKeyPrefix(c.ClusterID)
 
-	resp, err := c.Client.Get(ctx, key, clientv3.WithPrefix())
+	resp, err := c.GetEtcdClient().Get(ctx, key, clientv3.WithPrefix())
 	if err != nil {
 		return nil, cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
 	}
@@ -527,7 +530,7 @@ func (c *CDCEtcdClientImpl) GetCaptureLeases(ctx context.Context) (map[string]in
 // RevokeAllLeases revokes all leases passed from parameter
 func (c *CDCEtcdClientImpl) RevokeAllLeases(ctx context.Context, leases map[string]int64) error {
 	for _, lease := range leases {
-		_, err := c.Client.Revoke(ctx, clientv3.LeaseID(lease))
+		_, err := c.GetEtcdClient().Revoke(ctx, clientv3.LeaseID(lease))
 		if err == nil {
 			continue
 		} else if etcdErr := err.(rpctypes.EtcdError); etcdErr.Code() == codes.NotFound {
@@ -559,7 +562,7 @@ func (c *CDCEtcdClientImpl) CreateChangefeedInfo(ctx context.Context,
 	if err != nil {
 		return errors.Trace(err)
 	}
-	upstreamResp, err := c.Client.Get(ctx, upstreamEtcdKeyStr)
+	upstreamResp, err := c.GetEtcdClient().Get(ctx, upstreamEtcdKeyStr)
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -585,7 +588,7 @@ func (c *CDCEtcdClientImpl) CreateChangefeedInfo(ctx context.Context,
 				"=", upstreamResp.Kvs[0].ModRevision))
 	}
 
-	resp, err := c.Client.Txn(ctx, cmps, opsThen, TxnEmptyOpsElse)
+	resp, err := c.GetEtcdClient().Txn(ctx, cmps, opsThen, TxnEmptyOpsElse)
 	if err != nil {
 		return cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
 	}
@@ -625,7 +628,7 @@ func (c *CDCEtcdClientImpl) UpdateChangefeedAndUpstream(ctx context.Context,
 		clientv3.OpPut(upstreamKeyStr, string(upstreamInfoStr)),
 	}
 
-	resp, err := c.Client.Txn(ctx, txnEmptyCmps, opsThen, TxnEmptyOpsElse)
+	resp, err := c.GetEtcdClient().Txn(ctx, txnEmptyCmps, opsThen, TxnEmptyOpsElse)
 	if err != nil {
 		return cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
 	}
@@ -649,7 +652,7 @@ func (c *CDCEtcdClientImpl) SaveChangeFeedInfo(ctx context.Context,
 	if err != nil {
 		return errors.Trace(err)
 	}
-	_, err = c.Client.Put(ctx, key, value)
+	_, err = c.GetEtcdClient().Put(ctx, key, value)
 	return cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
 }
 
@@ -664,14 +667,14 @@ func (c *CDCEtcdClientImpl) PutCaptureInfo(
 	}
 
 	key := GetEtcdKeyCaptureInfo(c.ClusterID, info.ID)
-	_, err = c.Client.Put(ctx, key, string(data), clientv3.WithLease(leaseID))
+	_, err = c.GetEtcdClient().Put(ctx, key, string(data), clientv3.WithLease(leaseID))
 	return cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
 }
 
 // DeleteCaptureInfo delete all capture related info from etcd.
 func (c *CDCEtcdClientImpl) DeleteCaptureInfo(ctx context.Context, captureID string) error {
 	key := GetEtcdKeyCaptureInfo(c.ClusterID, captureID)
-	_, err := c.Client.Delete(ctx, key)
+	_, err := c.GetEtcdClient().Delete(ctx, key)
 	if err != nil {
 		return cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
 	}
@@ -681,7 +684,7 @@ func (c *CDCEtcdClientImpl) DeleteCaptureInfo(ctx context.Context, captureID str
 	taskKey := TaskPositionKeyPrefix(c.ClusterID, model.DefaultNamespace)
 	// the taskKey format is /tidb/cdc/{clusterID}/{namespace}/task/position/{captureID}
 	taskKey = fmt.Sprintf("%s/%s", taskKey, captureID)
-	_, err = c.Client.Delete(ctx, taskKey, clientv3.WithPrefix())
+	_, err = c.GetEtcdClient().Delete(ctx, taskKey, clientv3.WithPrefix())
 	if err != nil {
 		log.Warn("delete task position failed",
 			zap.String("clusterID", c.ClusterID),
@@ -693,7 +696,7 @@ func (c *CDCEtcdClientImpl) DeleteCaptureInfo(ctx context.Context, captureID str
 
 // GetOwnerID returns the owner id by querying etcd
 func (c *CDCEtcdClientImpl) GetOwnerID(ctx context.Context) (string, error) {
-	resp, err := c.Client.Get(ctx, CaptureOwnerKey(c.ClusterID),
+	resp, err := c.GetEtcdClient().Get(ctx, CaptureOwnerKey(c.ClusterID),
 		clientv3.WithFirstCreate()...)
 	if err != nil {
 		return "", cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
@@ -708,7 +711,7 @@ func (c *CDCEtcdClientImpl) GetOwnerID(ctx context.Context) (string, error) {
 func (c *CDCEtcdClientImpl) GetOwnerRevision(
 	ctx context.Context, captureID string,
 ) (rev int64, err error) {
-	resp, err := c.Client.Get(ctx, CaptureOwnerKey(c.ClusterID), clientv3.WithFirstCreate()...)
+	resp, err := c.GetEtcdClient().Get(ctx, CaptureOwnerKey(c.ClusterID), clientv3.WithFirstCreate()...)
 	if err != nil {
 		return 0, cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
 	}
@@ -744,7 +747,7 @@ func (c *CDCEtcdClientImpl) GetUpstreamInfo(ctx context.Context,
 		Namespace:  namespace,
 	}
 	KeyStr := Key.String()
-	resp, err := c.Client.Get(ctx, KeyStr)
+	resp, err := c.GetEtcdClient().Get(ctx, KeyStr)
 	if err != nil {
 		return nil, cerror.WrapError(cerror.ErrPDEtcdAPIError, err)
 	}

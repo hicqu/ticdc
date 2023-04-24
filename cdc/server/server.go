@@ -363,6 +363,11 @@ func (s *server) Close() {
 		}
 		s.tcpServer = nil
 	}
+	if s.etcdClient != nil {
+		if err := s.etcdClient.Close(); err != nil {
+			log.Error("close etcd client", zap.Error(err))
+		}
+	}
 }
 
 func (s *server) closeSortEngineFactory() {
