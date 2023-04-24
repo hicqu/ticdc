@@ -15,9 +15,11 @@ package etcd
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pingcap/errors"
@@ -26,18 +28,32 @@ import (
 	"github.com/pingcap/tiflow/pkg/config"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
+	pd "github.com/tikv/pd/client"
 	"github.com/tikv/pd/pkg/utils/tempurl"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"go.etcd.io/etcd/client/pkg/v3/logutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/codes"
 )
 
 // DefaultCDCClusterID is the default value of cdc cluster id
 const DefaultCDCClusterID = "default"
+
+var metrics map[string]prometheus.Counter = map[string]prometheus.Counter{
+	EtcdPut:    etcdRequestCounter.WithLabelValues(EtcdPut),
+	EtcdGet:    etcdRequestCounter.WithLabelValues(EtcdGet),
+	EtcdDel:    etcdRequestCounter.WithLabelValues(EtcdDel),
+	EtcdTxn:    etcdRequestCounter.WithLabelValues(EtcdTxn),
+	EtcdGrant:  etcdRequestCounter.WithLabelValues(EtcdGrant),
+	EtcdRevoke: etcdRequestCounter.WithLabelValues(EtcdRevoke),
+}
 
 // CaptureOwnerKey is the capture owner path that is saved to etcd
 func CaptureOwnerKey(clusterID string) string {
@@ -154,13 +170,20 @@ type CDCEtcdClient interface {
 	DeleteCaptureInfo(context.Context, model.CaptureID) error
 
 	CheckMultipleCDCClusterExist(ctx context.Context) error
+
+	Close() error
 }
 
 // CDCEtcdClientImpl is a wrap of etcd client
 type CDCEtcdClientImpl struct {
-	Client        *Client
 	ClusterID     string
 	etcdClusterID uint64
+
+	closed chan struct{}
+	wg     sync.WaitGroup
+
+	mu     sync.RWMutex
+	Client *Client
 }
 
 var _ CDCEtcdClient = (*CDCEtcdClientImpl)(nil)
@@ -170,27 +193,126 @@ func NewCDCEtcdClient(ctx context.Context,
 	cli *clientv3.Client,
 	clusterID string,
 ) (*CDCEtcdClientImpl, error) {
-	metrics := map[string]prometheus.Counter{
-		EtcdPut:    etcdRequestCounter.WithLabelValues(EtcdPut),
-		EtcdGet:    etcdRequestCounter.WithLabelValues(EtcdGet),
-		EtcdDel:    etcdRequestCounter.WithLabelValues(EtcdDel),
-		EtcdTxn:    etcdRequestCounter.WithLabelValues(EtcdTxn),
-		EtcdGrant:  etcdRequestCounter.WithLabelValues(EtcdGrant),
-		EtcdRevoke: etcdRequestCounter.WithLabelValues(EtcdRevoke),
-	}
 	resp, err := cli.MemberList(ctx)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 	return &CDCEtcdClientImpl{
 		etcdClusterID: resp.Header.ClusterId,
-		Client:        Wrap(cli, metrics),
 		ClusterID:     clusterID,
+		closed:        make(chan struct{}),
+		Client:        Wrap(cli, metrics),
 	}, nil
+}
+
+// ConnectToPD connects to a PD cluster and return a etcd client.
+func ConnectToPD(
+	ctx context.Context, endpoints []string,
+	pdSecurityOption pd.SecurityOption,
+	tlsConfig *tls.Config, dailOption grpc.DialOption,
+	clusterID string,
+) (*CDCEtcdClientImpl, error) {
+	connectToEtcdLeader := func(leader string) (*clientv3.Client, error) {
+		logConfig := &logutil.DefaultZapLoggerConfig
+		logConfig.Level = zap.NewAtomicLevelAt(zapcore.ErrorLevel)
+
+		// we do not pass a `context` to the etcd client,
+		// to prevent it's cancelled when the server is closing.
+		// For example, when the non-owner node goes offline,
+		// it would resign the campaign key which was put by call `campaign`,
+		// if this is not done due to the passed context cancelled,
+		// the key will be kept for the lease TTL, which is 10 seconds,
+		// then cause the new owner cannot be elected immediately after the old owner offline.
+		// see https://github.com/etcd-io/etcd/blob/525d53bd41/client/v3/concurrency/election.go#L98
+		etcdCli, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{leader},
+			TLS:         tlsConfig,
+			LogConfig:   logConfig,
+			DialTimeout: 5 * time.Second,
+			DialOptions: []grpc.DialOption{
+				dailOption,
+				grpc.WithBlock(),
+				grpc.WithConnectParams(grpc.ConnectParams{
+					Backoff: backoff.Config{
+						BaseDelay:  time.Second,
+						Multiplier: 1.1,
+						Jitter:     0.1,
+						MaxDelay:   3 * time.Second,
+					},
+					MinConnectTimeout: 3 * time.Second,
+				}),
+			},
+		})
+		if err != nil {
+			return nil, errors.Trace(err)
+		}
+		return etcdCli, nil
+	}
+
+	etcdClient := &CDCEtcdClientImpl{
+		ClusterID: clusterID,
+		closed:    make(chan struct{}),
+	}
+
+	grpcClient, err := pd.NewClientWithContext(ctx, endpoints, pdSecurityOption)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	etcdClient.wg.Add(1)
+	etcdClusterID := make(chan uint64, 1)
+	timer := time.NewTicker(time.Second)
+	go func() {
+		defer etcdClient.wg.Done()
+		oldLeader := ""
+		emitEtcdClusterID := true
+	LOOP:
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-etcdClient.closed:
+				return
+			case <-timer.C:
+			}
+			leader := grpcClient.GetLeaderAddr()
+			if leader != oldLeader && leader != "" {
+				cli, err := connectToEtcdLeader(leader)
+				if err != nil {
+					log.Error("connect to etcd leader fails",
+						zap.String("leader", leader),
+						zap.Error(err))
+					continue LOOP
+				}
+				log.Info("connect to etcd leader successes", zap.String("leader", leader))
+				etcdClient.mu.Lock()
+				etcdClient.Client = Wrap(cli, metrics)
+				etcdClient.mu.Unlock()
+				oldLeader = leader
+
+				if emitEtcdClusterID {
+					if resp, err := cli.MemberList(ctx); err == nil {
+						etcdClusterID <- resp.Header.ClusterId
+						emitEtcdClusterID = false
+					}
+				}
+			}
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-etcdClusterID:
+		etcdClient.etcdClusterID = <-etcdClusterID
+		return etcdClient, nil
+	}
 }
 
 // Close releases resources in CDCEtcdClient
 func (c *CDCEtcdClientImpl) Close() error {
+	close(c.closed)
+	c.wg.Wait()
 	return c.Client.Unwrap().Close()
 }
 
