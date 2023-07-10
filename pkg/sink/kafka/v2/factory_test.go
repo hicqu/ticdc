@@ -103,27 +103,26 @@ func TestAsyncProducer(t *testing.T) {
 		},
 	)
 
-	ctx := context.Background()
-	async, err := factory.AsyncProducer(ctx, make(chan struct{}, 1), make(chan error, 1))
+	var ctx context.Context
+	var cancel context.CancelFunc
+
+	ctx = context.Background()
+	async, err := factory.AsyncProducer(ctx, make(chan error, 1))
 	require.NoError(t, err)
 
 	asyncP, ok := async.(*asyncWriter)
 	w := asyncP.w.(*kafka.Writer)
 	require.True(t, ok)
 	require.True(t, w.Async)
-	require.NotNil(t, asyncP.closedChan)
 
 	require.Equal(t, w.ReadTimeout, o.ReadTimeout)
 	require.Equal(t, w.WriteTimeout, o.WriteTimeout)
 	require.Equal(t, w.RequiredAcks, kafka.RequiredAcks(o.RequiredAcks))
 	require.Equal(t, w.BatchBytes, int64(o.MaxMessageBytes))
 
+	ctx, cancel = context.WithCancel(context.Background())
 	var (
-		async0, _ = factory.AsyncProducer(
-			ctx,
-			make(chan struct{}, 1),
-			make(chan error, 1),
-		)
+		async0, _  = factory.AsyncProducer(ctx, make(chan error, 1))
 		asyncP0, _ = async0.(*asyncWriter)
 		retErr0    error
 		retChan0   = make(chan struct{})
@@ -132,16 +131,13 @@ func TestAsyncProducer(t *testing.T) {
 		retErr0 = asyncP0.AsyncRunCallback(ctx)
 		close(retChan0)
 	}()
-	close(asyncP0.closedChan)
+	cancel()
 	<-retChan0
-	require.NoError(t, retErr0)
+	require.Equal(t, context.Canceled, retErr0)
 
+	ctx, cancel = context.WithCancel(context.Background())
 	var (
-		async1, _ = factory.AsyncProducer(
-			ctx,
-			make(chan struct{}, 1),
-			make(chan error, 1),
-		)
+		async1, _  = factory.AsyncProducer(ctx, make(chan error, 1))
 		asyncP1, _ = async1.(*asyncWriter)
 		retErr1    error
 		retChan1   = make(chan struct{})
@@ -155,12 +151,9 @@ func TestAsyncProducer(t *testing.T) {
 	<-retChan1
 	require.Equal(t, retErr1.Error(), cerror.Trace(sendErr).Error())
 
+	ctx, cancel = context.WithCancel(context.Background())
 	var (
-		async2, _ = factory.AsyncProducer(
-			ctx,
-			make(chan struct{}, 1),
-			make(chan error, 1),
-		)
+		async2, _  = factory.AsyncProducer(ctx, make(chan error, 1))
 		asyncP2, _ = async2.(*asyncWriter)
 		retErr2    error
 		retChan2   = make(chan struct{})
@@ -179,12 +172,9 @@ func TestAsyncProducer(t *testing.T) {
 		).Error(),
 	)
 
+	ctx, cancel = context.WithCancel(context.Background())
 	var (
-		async3, _ = factory.AsyncProducer(
-			ctx,
-			make(chan struct{}, 1),
-			make(chan error, 1),
-		)
+		async3, _  = factory.AsyncProducer(ctx, make(chan error, 1))
 		asyncP3, _ = async3.(*asyncWriter)
 		retErr3    error
 		retChan3   = make(chan struct{})
@@ -197,12 +187,9 @@ func TestAsyncProducer(t *testing.T) {
 	<-retChan3
 	require.NoError(t, retErr3)
 
+	ctx, cancel = context.WithCancel(context.Background())
 	var (
-		async4, _ = factory.AsyncProducer(
-			ctx,
-			make(chan struct{}, 1),
-			make(chan error, 1),
-		)
+		async4, _     = factory.AsyncProducer(ctx, make(chan error, 1))
 		asyncP4, _    = async4.(*asyncWriter)
 		retErr4       error
 		retChan4      = make(chan struct{})
@@ -224,7 +211,7 @@ func TestAsyncCompletetion(t *testing.T) {
 	o := newOptions4Test()
 	factory := newFactory4Test(o, t)
 	ctx := context.Background()
-	async, err := factory.AsyncProducer(ctx, make(chan struct{}, 1), make(chan error, 1))
+	async, err := factory.AsyncProducer(ctx, make(chan error, 1))
 	require.NoError(t, err)
 	asyncP, ok := async.(*asyncWriter)
 	require.True(t, ok)
@@ -343,15 +330,10 @@ func TestSyncWriterClose(t *testing.T) {
 func TestAsyncWriterAsyncSend(t *testing.T) {
 	mw := v2mock.NewMockWriter(gomock.NewController(t))
 	w := asyncWriter{w: mw}
-	closedCh := make(chan struct{}, 2)
-	closedCh <- struct{}{}
-	w.closedChan = closedCh
-	callback := func() {}
-	err := w.AsyncSend(context.Background(), "topic", 1, []byte{'1'}, []byte{}, callback)
-	require.Nil(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err = w.AsyncSend(ctx, "topic", 1, []byte{'1'}, []byte{}, callback)
+	callback := func() {}
+	err := w.AsyncSend(ctx, "topic", 1, []byte{'1'}, []byte{}, callback)
 	require.NotNil(t, err)
 	mw.EXPECT().WriteMessages(gomock.Any(), gomock.Any()).Return(errors.New("fake"))
 	err = w.AsyncSend(context.Background(), "topic", 1, []byte{'1'}, []byte{}, callback)

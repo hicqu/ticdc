@@ -128,9 +128,8 @@ func (w *worker) run(ctx context.Context) (retErr error) {
 		}
 		return w.nonBatchEncodeRun(ctx)
 	})
-	g.Go(func() error {
-		return w.sendMessages(ctx)
-	})
+	g.Go(func() error { return w.sendMessages(ctx) })
+	g.Go(func() error { return w.producer.Run(ctx) })
 	return g.Wait()
 }
 
@@ -313,7 +312,6 @@ func (w *worker) sendMessages(ctx context.Context) error {
 func (w *worker) close() {
 	w.msgChan.CloseAndDrain()
 	w.producer.Close()
-
 	mq.WorkerSendMessageDuration.DeleteLabelValues(w.changeFeedID.Namespace, w.changeFeedID.ID)
 	mq.WorkerBatchSize.DeleteLabelValues(w.changeFeedID.Namespace, w.changeFeedID.ID)
 	mq.WorkerBatchDuration.DeleteLabelValues(w.changeFeedID.Namespace, w.changeFeedID.ID)

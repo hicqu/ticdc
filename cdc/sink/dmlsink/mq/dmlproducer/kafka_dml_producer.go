@@ -37,69 +37,30 @@ type kafkaDMLProducer struct {
 	asyncProducer kafka.AsyncProducer
 	// metricsCollector is used to report metrics.
 	metricsCollector kafka.MetricsCollector
-	// closedMu is used to protect `closed`.
-	// We need to ensure that closed producers are never written to.
-	closedMu sync.RWMutex
-	// closed is used to indicate whether the producer is closed.
-	// We also use it to guard against double closes.
-	closed bool
-	// closedChan is used to notify the run loop to exit.
-	closedChan chan struct{}
+
+	state struct {
+		sync.RWMutex
+		n int // 0(inited) -> 1(stopped) -> 2(closed).
+	}
+
 	// failpointCh is used to inject failpoints to the run loop.
 	// Only used in test.
 	failpointCh chan error
-
-	cancel context.CancelFunc
 }
 
 // NewKafkaDMLProducer creates a new kafka producer.
 func NewKafkaDMLProducer(
-	ctx context.Context,
 	changefeedID model.ChangeFeedID,
 	asyncProducer kafka.AsyncProducer,
 	metricsCollector kafka.MetricsCollector,
-	errCh chan error,
-	closeCh chan struct{},
 	failpointCh chan error,
-) (DMLProducer, error) {
-	log.Info("Starting kafka DML producer ...",
-		zap.String("namespace", changefeedID.Namespace),
-		zap.String("changefeed", changefeedID.ID))
-
-	ctx, cancel := context.WithCancel(ctx)
-	k := &kafkaDMLProducer{
+) DMLProducer {
+	return &kafkaDMLProducer{
 		id:               changefeedID,
 		asyncProducer:    asyncProducer,
 		metricsCollector: metricsCollector,
-		closed:           false,
-		closedChan:       closeCh,
 		failpointCh:      failpointCh,
-		cancel:           cancel,
 	}
-
-	// Start collecting metrics.
-	go k.metricsCollector.Run(ctx)
-
-	go func() {
-		if err := k.run(ctx); err != nil && errors.Cause(err) != context.Canceled {
-			select {
-			case <-ctx.Done():
-				return
-			case errCh <- err:
-				log.Error("Kafka DML producer run error",
-					zap.String("namespace", k.id.Namespace),
-					zap.String("changefeed", k.id.ID),
-					zap.Error(err))
-			default:
-				log.Error("Error channel is full in kafka DML producer",
-					zap.String("namespace", k.id.Namespace),
-					zap.String("changefeed", k.id.ID),
-					zap.Error(err))
-			}
-		}
-	}()
-
-	return k, nil
 }
 
 func (k *kafkaDMLProducer) AsyncSendMessage(
@@ -108,13 +69,12 @@ func (k *kafkaDMLProducer) AsyncSendMessage(
 ) error {
 	// We have to hold the lock to avoid writing to a closed producer.
 	// Close may be blocked for a long time.
-	k.closedMu.RLock()
-	defer k.closedMu.RUnlock()
-
-	// If the producer is closed, we should skip the message and return an error.
-	if k.closed {
+	k.state.RLock()
+	defer k.state.RUnlock()
+	if k.state.n != stateInited {
 		return cerror.ErrKafkaProducerClosed.GenWithStackByArgs()
 	}
+
 	failpoint.Inject("KafkaSinkAsyncSendError", func() {
 		// simulate sending message to input channel successfully but flushing
 		// message to Kafka meets error
@@ -127,31 +87,49 @@ func (k *kafkaDMLProducer) AsyncSendMessage(
 		message.Key, message.Value, message.Callback)
 }
 
-func (k *kafkaDMLProducer) Close() {
-	// We have to hold the lock to synchronize closing with writing.
-	k.closedMu.Lock()
-	defer k.closedMu.Unlock()
-	// If the producer has already been closed, we should skip this close operation.
-	if k.closed {
-		// We need to guard against double closing the clients,
-		// which could lead to panic.
-		log.Warn("Kafka DML producer already closed",
+// Run implements DMLProducer.
+func (k *kafkaDMLProducer) Run(ctx context.Context) (err error) {
+	log.Info("Starting kafka DML producer ...",
+		zap.String("namespace", k.id.Namespace),
+		zap.String("changefeed", k.id.ID))
+	defer func() {
+		k.state.Lock()
+		k.state.n = stateStopped
+		k.state.Unlock()
+		log.Info("Kafka DML producer exits",
 			zap.String("namespace", k.id.Namespace),
-			zap.String("changefeed", k.id.ID))
-		return
-	}
-	if k.cancel != nil {
-		k.cancel()
-	}
+			zap.String("changefeed", k.id.ID),
+			zap.Error(err))
+	}()
 
-	close(k.failpointCh)
-	// Notify the run loop to exit.
-	close(k.closedChan)
-	k.closed = true
+	var wg sync.WaitGroup
+	ctx, cancel := context.WithCancel(ctx)
 
-	k.asyncProducer.Close()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		k.metricsCollector.Run(ctx)
+	}()
+
+	err = k.asyncProducer.AsyncRunCallback(ctx)
+	cancel()
+	wg.Wait()
+	return
 }
 
-func (k *kafkaDMLProducer) run(ctx context.Context) error {
-	return k.asyncProducer.AsyncRunCallback(ctx)
+// Close implements DMLProducer.
+func (k *kafkaDMLProducer) Close() {
+	k.state.Lock()
+	defer k.state.Unlock()
+	if k.state.n != stateClosed {
+		k.state.n = stateClosed
+		k.asyncProducer.Close()
+		close(k.failpointCh)
+	}
 }
+
+const (
+	stateInited  int = 0
+	stateStopped int = 1
+	stateClosed  int = 2
+)

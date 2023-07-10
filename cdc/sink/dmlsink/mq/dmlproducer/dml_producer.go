@@ -28,20 +28,18 @@ type DMLProducer interface {
 		ctx context.Context, topic string, partition int32, message *common.Message,
 	) error
 
+	// Run the producer and client(s).
+	Run(ctx context.Context) error
+
 	// Close closes the producer and client(s).
+	// Must be called after `Run` returns.
 	Close()
 }
 
 // Factory is a function to create a producer.
-// errCh is used to report error to the caller(i.e. processor,owner).
-// Because the caller passes errCh to many goroutines,
-// there is no way to safely close errCh by the sender.
-// So we let the GC close errCh.
-// It's usually a buffered channel.
-type Factory func(ctx context.Context, changefeedID model.ChangeFeedID,
+type Factory func(
+	changefeedID model.ChangeFeedID,
 	asyncProducer kafka.AsyncProducer,
 	metricsCollector kafka.MetricsCollector,
-	errCh chan error,
-	closeCh chan struct{},
 	failpointCh chan error,
-) (DMLProducer, error)
+) DMLProducer

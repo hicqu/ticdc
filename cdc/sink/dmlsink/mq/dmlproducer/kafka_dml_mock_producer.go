@@ -34,16 +34,16 @@ type MockDMLProducer struct {
 }
 
 // NewDMLMockProducer creates a mock producer.
-func NewDMLMockProducer(_ context.Context, _ model.ChangeFeedID, asyncProducer kafka.AsyncProducer,
+func NewDMLMockProducer(
+	_ model.ChangeFeedID,
+	asyncProducer kafka.AsyncProducer,
 	_ kafka.MetricsCollector,
 	_ chan error,
-	_ chan struct{},
-	_ chan error,
-) (DMLProducer, error) {
+) DMLProducer {
 	return &MockDMLProducer{
 		events:        make(map[string][]*common.Message),
 		asyncProducer: asyncProducer,
-	}, nil
+	}
 }
 
 // AsyncSendMessage appends a message to the mock producer.
@@ -61,6 +61,12 @@ func (m *MockDMLProducer) AsyncSendMessage(_ context.Context, topic string,
 
 	message.Callback()
 
+	return nil
+}
+
+// Run implements DMLProducer.
+func (m *MockDMLProducer) Run(ctx context.Context) error {
+	<-ctx.Done()
 	return nil
 }
 

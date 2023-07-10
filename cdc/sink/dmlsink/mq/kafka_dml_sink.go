@@ -49,6 +49,7 @@ func NewKafkaDMLSink(
 	if err := options.Apply(changefeedID, sinkURI, replicaConfig); err != nil {
 		return nil, cerror.WrapError(cerror.ErrKafkaInvalidConfig, err)
 	}
+	log.Info("Try to create a DML sink producer", zap.Any("options", options))
 
 	factory, err := factoryCreator(options, changefeedID)
 	if err != nil {
@@ -59,9 +60,6 @@ func NewKafkaDMLSink(
 	if err != nil {
 		return nil, cerror.WrapError(cerror.ErrKafkaNewProducer, err)
 	}
-
-	// We must close adminClient when this func return cause by an error
-	// otherwise the adminClient will never be closed and lead to a goroutine leak.
 	defer func() {
 		if err != nil && adminClient != nil {
 			adminClient.Close()
@@ -73,16 +71,13 @@ func NewKafkaDMLSink(
 		return nil, cerror.WrapError(cerror.ErrKafkaNewProducer, err)
 	}
 
-	protocol, err := util.GetProtocol(
-		tiflowutil.GetOrZero(replicaConfig.Sink.Protocol),
-	)
+	protocol, err := util.GetProtocol(tiflowutil.GetOrZero(replicaConfig.Sink.Protocol))
 	if err != nil {
 		return nil, errors.Trace(err)
 	}
 
-	closeCh := make(chan struct{})
 	failpointCh := make(chan error, 1)
-	asyncProducer, err := factory.AsyncProducer(ctx, closeCh, failpointCh)
+	asyncProducer, err := factory.AsyncProducer(ctx, failpointCh)
 	if err != nil {
 		return nil, cerror.WrapError(cerror.ErrKafkaNewProducer, err)
 	}
@@ -93,14 +88,9 @@ func NewKafkaDMLSink(
 	}()
 
 	metricsCollector := factory.MetricsCollector(tiflowutil.RoleProcessor, adminClient)
-	log.Info("Try to create a DML sink producer",
-		zap.Any("options", options))
-	p, err := producerCreator(ctx, changefeedID, asyncProducer, metricsCollector, errCh, closeCh, failpointCh)
-	if err != nil {
-		return nil, cerror.WrapError(cerror.ErrKafkaNewProducer, err)
-	}
-	// Preventing leaks when error occurs.
-	// This also closes the client in p.Close().
+
+	p := producerCreator(changefeedID, asyncProducer, metricsCollector, failpointCh)
+	asyncProducer = nil
 	defer func() {
 		if err != nil && p != nil {
 			p.Close()
@@ -123,8 +113,7 @@ func NewKafkaDMLSink(
 		return nil, errors.Trace(err)
 	}
 
-	encoderConfig, err := util.GetEncoderConfig(sinkURI, protocol, replicaConfig,
-		options.MaxMessageBytes)
+	encoderConfig, err := util.GetEncoderConfig(sinkURI, protocol, replicaConfig, options.MaxMessageBytes)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}

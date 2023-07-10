@@ -37,8 +37,7 @@ func newBatchEncodeWorker(ctx context.Context, t *testing.T) (*worker, dmlproduc
 	encoderConfig := common.NewConfig(config.ProtocolOpen).WithMaxMessageBytes(200)
 	builder, err := builder.NewRowEventEncoderBuilder(context.Background(), id, encoderConfig)
 	require.NoError(t, err)
-	p, err := dmlproducer.NewDMLMockProducer(context.Background(), id, nil, nil, nil, nil, nil)
-	require.NoError(t, err)
+	p := dmlproducer.NewDMLMockProducer(id, nil, nil, nil)
 	encoderConcurrency := 4
 	statistics := metrics.NewStatistics(ctx, id, sink.RowSink)
 	return newWorker(id, config.ProtocolOpen, builder, encoderConcurrency, p, statistics), p
@@ -51,8 +50,7 @@ func newNonBatchEncodeWorker(ctx context.Context, t *testing.T) (*worker, dmlpro
 	builder, err := builder.NewRowEventEncoderBuilder(context.Background(),
 		id, encoderConfig)
 	require.NoError(t, err)
-	p, err := dmlproducer.NewDMLMockProducer(context.Background(), id, nil, nil, nil, nil, nil)
-	require.NoError(t, err)
+	p := dmlproducer.NewDMLMockProducer(id, nil, nil, nil)
 	encoderConcurrency := 4
 	statistics := metrics.NewStatistics(ctx, id, sink.RowSink)
 	return newWorker(id, config.ProtocolCanalJSON, builder, encoderConcurrency, p, statistics), p

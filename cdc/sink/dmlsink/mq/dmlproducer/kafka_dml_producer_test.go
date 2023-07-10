@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Shopify/sarama"
+	perrors "github.com/pingcap/errors"
 	"github.com/pingcap/tiflow/cdc/model"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
 	"github.com/pingcap/tiflow/pkg/sink/codec/common"
@@ -45,7 +46,6 @@ func TestProducerAck(t *testing.T) {
 	options := getOptions()
 	options.MaxMessages = 1
 
-	errCh := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	config, err := kafka.NewSaramaConfig(ctx, options)
 	require.Nil(t, err)
@@ -60,15 +60,20 @@ func TestProducerAck(t *testing.T) {
 	require.NoError(t, err)
 	metricsCollector := factory.MetricsCollector(util.RoleTester, adminClient)
 
-	closeCh := make(chan struct{})
 	failpointCh := make(chan error, 1)
-	asyncProducer, err := factory.AsyncProducer(ctx, closeCh, failpointCh)
+	asyncProducer, err := factory.AsyncProducer(ctx, failpointCh)
 	require.NoError(t, err)
 
-	producer, err := NewKafkaDMLProducer(ctx, changefeed,
-		asyncProducer, metricsCollector, errCh, closeCh, failpointCh)
-	require.NoError(t, err)
-	require.NotNil(t, producer)
+	errCh := make(chan error, 16)
+	producer := NewKafkaDMLProducer(changefeed, asyncProducer, metricsCollector, failpointCh)
+	go func() {
+		err := producer.Run(ctx)
+		if err != nil && perrors.Cause(err) != context.Canceled {
+			errCh <- err
+		}
+		producer.Close()
+		close(errCh)
+	}()
 
 	messageCount := 20
 	for i := 0; i < messageCount; i++ {
@@ -103,11 +108,17 @@ func TestProducerAck(t *testing.T) {
 	select {
 	case err := <-errCh:
 		t.Fatalf("unexpected err: %s", err)
-	default:
+	case <-time.After(100 * time.Millisecond):
 	}
 
-	producer.Close()
 	cancel()
+	select {
+	case err := <-errCh:
+		require.Nil(t, err)
+	case <-time.After(100 * time.Millisecond):
+		require.True(t, false, "must get the channel closed event")
+	}
+
 	// check send messages when context is producer closed
 	err = producer.AsyncSendMessage(ctx, kafka.DefaultMockTopicName, int32(0), &common.Message{
 		Key:   []byte("cancel"),
@@ -118,7 +129,6 @@ func TestProducerAck(t *testing.T) {
 
 func TestProducerSendMsgFailed(t *testing.T) {
 	options := getOptions()
-	errCh := make(chan error, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 	_, err := kafka.NewSaramaConfig(ctx, options)
@@ -135,21 +145,21 @@ func TestProducerSendMsgFailed(t *testing.T) {
 	require.NoError(t, err)
 	metricsCollector := factory.MetricsCollector(util.RoleTester, adminClient)
 
-	closeCh := make(chan struct{})
 	failpointCh := make(chan error, 1)
-	asyncProducer, err := factory.AsyncProducer(ctx, closeCh, failpointCh)
+	asyncProducer, err := factory.AsyncProducer(ctx, failpointCh)
 	require.NoError(t, err)
 
-	producer, err := NewKafkaDMLProducer(ctx, changefeed,
-		asyncProducer, metricsCollector, errCh, closeCh, failpointCh)
-	require.NoError(t, err)
-	require.NotNil(t, producer)
-
-	defer func() {
-		producer.Close()
-
+	errCh := make(chan error, 16)
+	producer := NewKafkaDMLProducer(changefeed, asyncProducer, metricsCollector, failpointCh)
+	go func() {
+		err := producer.Run(ctx)
+		if err != nil && perrors.Cause(err) != context.Canceled {
+			errCh <- err
+		}
 		// Close reentry.
 		producer.Close()
+		producer.Close()
+		close(errCh)
 	}()
 
 	var wg sync.WaitGroup
@@ -189,7 +199,6 @@ func TestProducerSendMsgFailed(t *testing.T) {
 func TestProducerDoubleClose(t *testing.T) {
 	options := getOptions()
 
-	errCh := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -202,15 +211,12 @@ func TestProducerDoubleClose(t *testing.T) {
 	require.NoError(t, err)
 	metricsCollector := factory.MetricsCollector(util.RoleTester, adminClient)
 
-	closeCh := make(chan struct{})
 	failpointCh := make(chan error, 1)
-	asyncProducer, err := factory.AsyncProducer(ctx, closeCh, failpointCh)
+	asyncProducer, err := factory.AsyncProducer(ctx, failpointCh)
 	require.NoError(t, err)
 
-	producer, err := NewKafkaDMLProducer(ctx, changefeed,
-		asyncProducer, metricsCollector, errCh, closeCh, failpointCh)
-	require.NoError(t, err)
-	require.NotNil(t, producer)
+	producer := NewKafkaDMLProducer(changefeed,
+		asyncProducer, metricsCollector, failpointCh)
 
 	producer.Close()
 	producer.Close()
