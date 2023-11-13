@@ -212,8 +212,10 @@ func (w *sinkWorker) handleTask(ctx context.Context, task *sinkTask) (finalErr e
 		if err != nil {
 			return errors.Trace(err)
 		}
+		// NOTE: lowerBound can be updated by `fetchFromCache`, so `lastPos` should also be updated.
+		lastPos = lowerBound.Prev()
 		if drained {
-			performCallback(lowerBound.Prev())
+			performCallback(lastPos)
 			return nil
 		}
 	}
